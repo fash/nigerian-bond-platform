@@ -1,195 +1,71 @@
-import { useState } from 'react';
-import { Card, CardContent } from './ui/card';
-import { Badge } from './ui/badge';
-import { Button } from './ui/button';
-import { InfoTooltip } from './InfoTooltip';
-import { RoleSelector } from './RoleSelector';
+"use client";
+import React, { useState } from 'react';
+import { User, ShieldCheck } from 'lucide-react';
+import { Card, CardContent, Badge, Button, Dialog, DialogContent, DialogHeader, DialogTitle } from './ui/primitives'; 
 import { useUserRole } from '../contexts/UserRoleContext';
-import { User, Shield, Wallet, CreditCard, Bell, HelpCircle, LogOut, ChevronRight, CheckCircle, UserCircle } from 'lucide-react';
+import { useAuth } from '../contexts/AuthContext'; 
 
 export function Account() {
-  const { role, roleConfig } = useUserRole();
+  const { role, roleConfig, setRole, availableRoles } = useUserRole();
+  const { logout, user } = useAuth(); 
   const [showRoleSelector, setShowRoleSelector] = useState(false);
 
-  const userProfile = {
-    name: 'Oluwaseun Adebayo',
-    email: 'oluwaseun.adebayo@email.com',
-    phone: '+234 803 456 7890',
-    bvnVerified: true,
-    kycStatus: 'Verified',
-    accountBalance: 125000,
-  };
-
-  const accountSections = [
-    {
-      title: 'Profile Information',
-      icon: User,
-      items: [
-        { label: 'Full Name', value: userProfile.name },
-        { label: 'Email Address', value: userProfile.email },
-        { label: 'Phone Number', value: userProfile.phone },
-      ],
-    },
-  ];
-
   return (
-    <div className="px-4 py-6 space-y-6">
-      {/* Header */}
+    <div className="p-4 space-y-6">
       <div className="text-center">
-        <div className="w-20 h-20 bg-[#008753] rounded-full flex items-center justify-center mx-auto mb-3">
-          <User size={40} className="text-white" />
+        <div className="w-20 h-20 bg-[#008753] rounded-full mx-auto mb-3 flex items-center justify-center text-white">
+          <User size={40} />
         </div>
-        <h2 className="text-gray-900">{userProfile.name}</h2>
-        <p className="text-gray-600 text-sm">{userProfile.email}</p>
-        <div className="flex items-center justify-center gap-2 mt-2">
-          <Badge className="bg-[#008753] hover:bg-[#006d42]">
-            <CheckCircle size={12} className="mr-1" />
-            {userProfile.kycStatus}
-          </Badge>
-          {userProfile.bvnVerified && (
-            <Badge variant="outline" className="border-blue-600 text-blue-600">
-              BVN Verified
-            </Badge>
-          )}
-        </div>
-        <Badge 
-          variant="outline" 
-          className={`mt-2 ${roleConfig.isRegulator ? 'border-blue-600 text-blue-600' : 'border-[#008753] text-[#008753]'}`}
-        >
-          {roleConfig.name}
-        </Badge>
+        
+        <h2 className="font-bold text-lg">
+          {user ? `${user.firstName} ${user.lastName}` : 'Guest User'}
+        </h2>
+        <p className="text-sm text-gray-500 mb-2">{user?.email}</p>
+        <Badge variant="outline" className="border-[#008753] text-[#008753]">{roleConfig.name}</Badge>
       </div>
 
-      {/* Account Type Card */}
-      <Card className="border-gray-200">
-        <CardContent className="p-4">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-3">
-              <UserCircle size={20} className="text-gray-600" />
-              <div>
-                <p className="text-gray-900 text-sm">Account Type</p>
-                <p className="text-gray-600 text-xs mt-0.5">{roleConfig.description}</p>
-              </div>
-            </div>
-            <Button 
-              size="sm" 
-              variant="outline"
-              onClick={() => setShowRoleSelector(true)}
-            >
-              Switch
-            </Button>
+      <Card>
+        <CardContent className="p-0 divide-y">
+          <div className="p-4 flex justify-between items-center">
+            <span className="text-sm font-medium">Account Role</span>
+            <Button variant="outline" size="sm" onClick={() => setShowRoleSelector(true)}>Switch</Button>
+          </div>
+          <div className="p-4 flex justify-between items-center">
+             <div className="flex items-center gap-3">
+               <ShieldCheck size={18} className="text-gray-400"/>
+               <span className="text-sm">KYC Status</span>
+             </div>
+             <Badge>Verified</Badge>
           </div>
         </CardContent>
       </Card>
-
-      {/* Account Balance Card - Only for trading accounts */}
-      {roleConfig.canTrade && (
-        <Card className="bg-gradient-to-br from-gray-900 to-gray-700 text-white border-0">
-          <CardContent className="p-4">
-            <div className="flex items-center gap-2 mb-2">
-              <Wallet size={20} className="text-white/80" />
-              <span className="text-white/80 text-sm">Account Balance</span>
-              <InfoTooltip 
-                content="Available funds in your account for purchasing bonds. Withdrawals will be available after your bonds mature."
-                isDark
-              />
-            </div>
-            <p className="text-3xl mb-4">₦{userProfile.accountBalance.toLocaleString()}</p>
-            <div className="flex gap-2">
-              <Button className="flex-1 bg-white text-gray-900 hover:bg-gray-100">
-                Add Funds
-              </Button>
-              <Button variant="outline" className="flex-1 border-white text-white hover:bg-white/10">
-                Withdraw
-              </Button>
-            </div>
-          </CardContent>
-        </Card>
-      )}
-
-      {/* Profile Information */}
-      {accountSections.map((section, idx) => (
-        <div key={idx} className="space-y-3">
-          <h3 className="text-gray-900 flex items-center gap-2">
-            <section.icon size={20} className="text-gray-600" />
-            {section.title}
-          </h3>
-          <Card className="border-gray-200">
-            <CardContent className="p-0">
-              {section.items.map((item, index) => (
-                <div
-                  key={index}
-                  className={`p-4 flex items-center justify-between ${
-                    index !== section.items.length - 1 ? 'border-b border-gray-100' : ''
-                  }`}
-                >
-                  <span className="text-gray-600 text-sm">{item.label}</span>
-                  <span className="text-gray-900 text-sm">{item.value}</span>
-                </div>
-              ))}
-            </CardContent>
-          </Card>
-        </div>
-      ))}
-
-      {/* Security & Settings */}
-      <div className="space-y-3">
-        <h3 className="text-gray-900 flex items-center gap-2">
-          <Shield size={20} className="text-gray-600" />
-          Security & Settings
-        </h3>
-        <Card className="border-gray-200">
-          <CardContent className="p-0">
-            <button className="w-full p-4 flex items-center justify-between border-b border-gray-100 hover:bg-gray-50 transition-colors">
-              <div className="flex items-center gap-3">
-                <CreditCard size={20} className="text-gray-600" />
-                <span className="text-gray-900 text-sm">Payment Methods</span>
-              </div>
-              <ChevronRight size={20} className="text-gray-400" />
-            </button>
-            <button className="w-full p-4 flex items-center justify-between border-b border-gray-100 hover:bg-gray-50 transition-colors">
-              <div className="flex items-center gap-3">
-                <Bell size={20} className="text-gray-600" />
-                <span className="text-gray-900 text-sm">Notifications</span>
-              </div>
-              <ChevronRight size={20} className="text-gray-400" />
-            </button>
-            <button className="w-full p-4 flex items-center justify-between border-b border-gray-100 hover:bg-gray-50 transition-colors">
-              <div className="flex items-center gap-3">
-                <Shield size={20} className="text-gray-600" />
-                <span className="text-gray-900 text-sm">Security Settings</span>
-              </div>
-              <ChevronRight size={20} className="text-gray-400" />
-            </button>
-            <button className="w-full p-4 flex items-center justify-between hover:bg-gray-50 transition-colors">
-              <div className="flex items-center gap-3">
-                <HelpCircle size={20} className="text-gray-600" />
-                <span className="text-gray-900 text-sm">Help & Support</span>
-              </div>
-              <ChevronRight size={20} className="text-gray-400" />
-            </button>
-          </CardContent>
-        </Card>
-      </div>
-
-      {/* Logout */}
+      
+      
       <Button 
         variant="outline" 
-        className="w-full text-red-600 border-red-200 hover:bg-red-50 hover:text-red-700"
+        className="w-full text-red-600 hover:bg-red-50 hover:text-red-700 hover:border-red-200" 
+        onClick={logout}
       >
-        <LogOut size={20} className="mr-2" />
         Log Out
       </Button>
 
-      {/* Version Info */}
-      <div className="text-center text-gray-500 text-xs pb-4">
-        Bond Token Nigeria v1.0.0
-        <br />
-        Secured with quantum-resistant cryptography
-      </div>
-
-      {/* Role Selector Modal */}
-      <RoleSelector open={showRoleSelector} onClose={() => setShowRoleSelector(false)} />
+      <Dialog open={showRoleSelector} onOpenChange={setShowRoleSelector}>
+        <DialogContent>
+          <DialogHeader><DialogTitle>Switch Role (Demo)</DialogTitle></DialogHeader>
+          <div className="space-y-2 py-4">
+            {availableRoles.map((r: string) => (
+              <button 
+                key={r}
+                onClick={() => { setRole(r); setShowRoleSelector(false); }}
+                className={`w-full p-3 text-left rounded-lg text-sm ${role === r ? 'bg-[#008753]/10 text-[#008753] font-bold' : 'hover:bg-gray-50'}`}
+              >
+                {r.charAt(0).toUpperCase() + r.slice(1).replace('-', ' ')}
+              </button>
+            ))}
+          </div>
+          <Button variant="outline" onClick={() => setShowRoleSelector(false)}>Cancel</Button>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
