@@ -1,16 +1,29 @@
 "use client";
+
 import React, { useState } from 'react';
 import { Shield, User, Fingerprint, CheckCircle2, Sparkles, ArrowRight, AlertCircle, Loader2 } from 'lucide-react';
-import { Card, CardHeader, CardTitle, CardDescription, CardContent, Button, Input, Label, Badge, Progress } from './ui/primitives';
-import { verifyBVN } from '../utils/smileIdMock'; 
+import { Card, CardHeader, CardTitle, CardDescription, CardContent } from '@/components/ui/primitives'; 
+import { Button, Input, Label, Badge, Progress } from '@/components/ui/primitives'; 
+import { verifyBVN } from '../utils/smileId';
+import { useAuth } from '../contexts/AuthContext';
 
-export function OnboardingFlow({ onComplete }) {
-  const [currentStep, setCurrentStep] = useState('bvn');
+interface KYCData {
+  firstName: string;
+  lastName: string;
+  phone: string;
+  email: string;
+}
+
+type Step = 'bvn' | 'account' | 'kyc' | 'complete';
+
+export function OnboardingFlow({ onComplete }: { onComplete: () => void }) {
+  const { register } = useAuth();
+  const [currentStep, setCurrentStep] = useState<Step>('bvn');
   const [bvn, setBvn] = useState('');
   const [isVerifying, setIsVerifying] = useState(false);
   const [error, setError] = useState('');
   
-  const [kycData, setKycData] = useState({
+  const [kycData, setKycData] = useState<KYCData>({
     firstName: '',
     lastName: '',
     phone: '',
@@ -28,17 +41,23 @@ export function OnboardingFlow({ onComplete }) {
 
   const handleBvnVerify = async () => {
     setError('');
+    
+    if (bvn.length !== 11) {
+      setError("BVN must be exactly 11 digits");
+      return;
+    }
+
     setIsVerifying(true);
 
     try {
       const response = await verifyBVN(bvn);
 
-      if (response.success) {
+      if (response.success && response.data) {
         setKycData({
           firstName: response.data.firstName,
           lastName: response.data.lastName,
-          phone: response.data.phoneNumber,
-          email: `${response.data.firstName.toLowerCase()}.${response.data.lastName.toLowerCase()}@email.com` 
+          phone: response.data.phone,
+          email: response.data.email || `${response.data.firstName.toLowerCase()}.${response.data.lastName.toLowerCase()}@email.com` 
         });
         setCurrentStep('account');
       } else {
@@ -46,7 +65,7 @@ export function OnboardingFlow({ onComplete }) {
       }
     } catch (err) {
       console.error(err);
-      setError("Network error. Please try again.");
+      setError("An unexpected error occurred.");
     } finally {
       setIsVerifying(false);
     }
@@ -66,6 +85,19 @@ export function OnboardingFlow({ onComplete }) {
       setIsVerifying(false);
       setCurrentStep('complete');
     }, 1500);
+  };
+
+  const handleFinalize = () => {
+    register({
+      firstName: kycData.firstName,
+      lastName: kycData.lastName,
+      email: kycData.email,
+      phone: kycData.phone,
+      bvn: bvn,
+      walletBalance: 0 
+    });
+    
+    if (onComplete) onComplete();
   };
 
   return (
@@ -113,8 +145,9 @@ export function OnboardingFlow({ onComplete }) {
                   placeholder="Enter 11-digit BVN" 
                   maxLength={11} 
                   value={bvn} 
-                  onChange={(e) => {
-                    setBvn(e.target.value.replace(/\D/g, ''));
+                  onChange={(e: React.ChangeEvent<HTMLInputElement>) => {
+                    const val = e.target.value.replace(/\D/g, '');
+                    setBvn(val);
                     setError('');
                   }}
                   className={error ? "border-red-500 focus:ring-red-500" : ""}
@@ -129,8 +162,8 @@ export function OnboardingFlow({ onComplete }) {
               <div className="bg-[#008753]/5 border border-[#008753]/20 rounded-lg p-3 flex gap-3">
                 <Shield className="size-5 text-[#008753]" />
                 <div className="text-xs">
-                  <p className="text-[#008753] font-medium">Test Mode Active</p>
-                  <p className="text-slate-600">Use <span className="font-mono bg-slate-200 px-1 rounded">00000000000</span> for success.</p>
+                  <p className="text-[#008753] font-medium">Secure Verification</p>
+                  <p className="text-slate-600">We check against the NIBSS database via Smile ID.</p>
                 </div>
               </div>
 
@@ -153,28 +186,29 @@ export function OnboardingFlow({ onComplete }) {
           <Card>
             <CardHeader>
               <CardTitle>Account Setup</CardTitle>
-              <CardDescription>We retrieved these details from your BVN</CardDescription>
+              <CardDescription>Details retrieved from BVN</CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
               <div className="grid grid-cols-2 gap-4">
                 <div className="space-y-2">
-                  <Label>First Name</Label>
-                  <Input value={kycData.firstName} readOnly className="bg-gray-50" />
+                  <Label htmlFor="firstName">First Name</Label>
+                  <Input id="firstName" value={kycData.firstName} readOnly className="bg-gray-50" />
                 </div>
                 <div className="space-y-2">
-                  <Label>Last Name</Label>
-                  <Input value={kycData.lastName} readOnly className="bg-gray-50" />
+                  <Label htmlFor="lastName">Last Name</Label>
+                  <Input id="lastName" value={kycData.lastName} readOnly className="bg-gray-50" />
                 </div>
               </div>
               <div className="space-y-2">
-                <Label>Phone Number</Label>
-                <Input value={kycData.phone} readOnly className="bg-gray-50" />
+                <Label htmlFor="phone">Phone Number</Label>
+                <Input id="phone" value={kycData.phone} readOnly className="bg-gray-50" />
               </div>
               <div className="space-y-2">
-                <Label>Email Address</Label>
+                <Label htmlFor="email">Email Address</Label>
                 <Input 
+                  id="email"
                   defaultValue={kycData.email} 
-                  onChange={(e) => setKycData({...kycData, email: e.target.value})}
+                  onChange={(e: React.ChangeEvent<HTMLInputElement>) => setKycData({...kycData, email: e.target.value})}
                 />
               </div>
               <Button className="w-full bg-[#008753] hover:bg-[#006d42]" onClick={handleAccountSetup} disabled={isVerifying}>
@@ -219,7 +253,7 @@ export function OnboardingFlow({ onComplete }) {
                   Wallet ID: {Math.floor(1000000000 + Math.random() * 9000000000)}
                 </Badge>
               </div>
-              <Button className="w-full bg-[#008753] hover:bg-[#006d42]" size="lg" onClick={() => onComplete()}>Go to Dashboard <ArrowRight className="ml-2 size-4" /></Button>
+              <Button className="w-full bg-[#008753] hover:bg-[#006d42]" size="lg" onClick={handleFinalize}>Go to Dashboard <ArrowRight className="ml-2 size-4" /></Button>
             </CardContent>
           </Card>
         )}
