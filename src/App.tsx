@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Tabs, TabsContent } from './components/ui/tabs';
+import { Tabs, TabsContent } from './components/ui/tabs'; 
 import { Dashboard } from './components/Dashboard';
 import { BuyBonds } from './components/BuyBonds';
 import { Account } from './components/Account';
@@ -11,10 +11,31 @@ import { RegulatoryDashboard } from './components/RegulatoryDashboard';
 import { UserRoleProvider, useUserRole } from './contexts/UserRoleContext';
 import { LayoutDashboard, ShoppingCart, User } from 'lucide-react';
 
+
+import { AuthProvider, useAuth } from './contexts/AuthContext';
+import { Login } from './components/Login';
+import { OnboardingFlow } from './components/OnboardingFlow';
+
 function AppContent() {
   const [activeTab, setActiveTab] = useState('dashboard');
   const [activeFeature, setActiveFeature] = useState<string | null>(null);
   const { roleConfig } = useUserRole();
+  
+  const { user, loading } = useAuth();
+  const [viewState, setViewState] = useState<'login' | 'register'>('login');
+
+  if (loading) {
+    return <div className="h-screen flex items-center justify-center text-[#008753]">Loading...</div>;
+  }
+
+ 
+  if (!user) {
+    if (viewState === 'register') {
+      return <OnboardingFlow onComplete={() => setViewState('login')} />;
+    }
+    return <Login onSwitchToRegister={() => setViewState('register')} />;
+  }
+  
 
   const handleFeatureOpen = (feature: string) => {
     setActiveFeature(feature);
@@ -115,8 +136,11 @@ function AppContent() {
 
 export default function App() {
   return (
-    <UserRoleProvider>
-      <AppContent />
-    </UserRoleProvider>
+    
+    <AuthProvider>
+      <UserRoleProvider>
+        <AppContent />
+      </UserRoleProvider>
+    </AuthProvider>
   );
 }

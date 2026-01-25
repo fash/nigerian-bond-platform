@@ -37,7 +37,7 @@ export async function POST(req: NextRequest) {
 
     const partner_id = process.env.SMILE_PARTNER_ID;
     const api_key = process.env.SMILE_API_KEY;
-    const env_code = process.env.SMILE_ENV; // 0 for test, 1 for prod
+    const env_code = process.env.SMILE_ENV;
 
     if (!partner_id || !api_key) {
       console.error("Missing Environment Variables for Smile ID");
@@ -47,7 +47,7 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // 1. Generate Timestamp
+    
     const timestamp = new Date().toISOString();
 
     // 2. Generate Signature (HMAC SHA256)
@@ -77,7 +77,7 @@ export async function POST(req: NextRequest) {
       }
     };
 
-    // 5. Fetch from Smile ID
+    
     const smileRes = await fetch(`${baseUrl}/id_verification`, {
       method: 'POST',
       headers: {
@@ -89,8 +89,7 @@ export async function POST(req: NextRequest) {
     const data: SmileIDResponse = await smileRes.json();
     console.log("Smile ID Response:", JSON.stringify(data, null, 2));
 
-    // 6. Handle Response (1012 = Verified)
-    // Note: Smile ID sometimes returns ResultCode as int, sometimes string
+    
     if (String(data.ResultCode) === "1012") {
       const info = data.FullData || {};
 
@@ -102,7 +101,7 @@ export async function POST(req: NextRequest) {
           lastName: info.LastName || info.surname || "",
           dateOfBirth: info.DateOfBirth || info.dob || "",
           phone: info.PhoneNumber || info.phone || "",
-          // Smile ID doesn't always return photo in basic KYC, check your plan
+          
           photo: info.Photo || "" 
         }
       });
