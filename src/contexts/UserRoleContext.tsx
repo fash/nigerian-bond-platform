@@ -1,4 +1,5 @@
-import { createContext, useContext, useState, ReactNode } from 'react';
+"use client";
+import React, { createContext, useContext, useState, ReactNode } from 'react';
 
 export type UserRole = 
   | 'individual'
@@ -11,12 +12,6 @@ export type UserRole =
   | 'firs'
   | 'cscs';
 
-interface UserRoleContextType {
-  role: UserRole;
-  setRole: (role: UserRole) => void;
-  roleConfig: RoleConfig;
-}
-
 interface RoleConfig {
   name: string;
   description: string;
@@ -24,6 +19,14 @@ interface RoleConfig {
   canViewAll: boolean;
   isRegulator: boolean;
   features: string[];
+}
+
+
+interface UserRoleContextType {
+  role: UserRole;
+  setRole: (role: UserRole) => void;
+  roleConfig: RoleConfig;
+  availableRoles: UserRole[];
 }
 
 const roleConfigs: Record<UserRole, RoleConfig> = {
@@ -107,9 +110,11 @@ export function UserRoleProvider({ children }: { children: ReactNode }) {
   const [role, setRole] = useState<UserRole>('individual');
 
   const roleConfig = roleConfigs[role];
+  // Fixed: Computed available roles to pass down
+  const availableRoles = Object.keys(roleConfigs) as UserRole[];
 
   return (
-    <UserRoleContext.Provider value={{ role, setRole, roleConfig }}>
+    <UserRoleContext.Provider value={{ role, setRole, roleConfig, availableRoles }}>
       {children}
     </UserRoleContext.Provider>
   );

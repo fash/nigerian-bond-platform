@@ -2,9 +2,9 @@
 
 import React, { useState } from 'react';
 import { Shield, User, Fingerprint, CheckCircle2, Sparkles, ArrowRight, AlertCircle, Loader2 } from 'lucide-react';
-import { Card, CardHeader, CardTitle, CardDescription, CardContent } from '@/components/ui/primitives'; 
-import { Button, Input, Label, Badge, Progress } from '@/components/ui/primitives'; 
-import { verifyBVN } from '../utils/smileId';
+import { Card, CardHeader, CardTitle, CardDescription, CardContent } from '../components/ui/primitives'; 
+import { Button, Input, Label, Badge, Progress } from '../components/ui/primitives'; 
+import { verifyBVN } from '../utils/smileIdMock';
 import { useAuth } from '../contexts/AuthContext';
 
 interface KYCData {

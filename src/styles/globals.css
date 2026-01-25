@@ -1,7 +1,24 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ... [Your existing variables kept exactly as is] ... */
 @custom-variant dark (&:is(.dark *));
 
 :root {
-  --font-size: 16px;
+  /* Increased base size for better readability on laptops */
+  --font-size: 18px;
+
+  /* Typography Variables (These were missing before) */
+  --text-xs: 0.75rem;
+  --text-sm: 0.875rem;
+  --text-base: 1rem;
+  --text-lg: 1.125rem;
+  --text-xl: 1.25rem;
+  --text-2xl: 1.5rem;
+  --text-3xl: 1.875rem;
+  --text-4xl: 2.25rem;
+
   --background: #ffffff;
   --foreground: oklch(0.145 0 0);
   --card: #ffffff;
@@ -126,6 +143,16 @@
 
   body {
     @apply bg-background text-foreground;
+    /* --- FIX: FONT SMOOTHING --- */
+    /* This makes fonts look thinner and crisper, matching Figma */
+    -webkit-font-smoothing: antialiased; 
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  /* --- FIX: HEADINGS & SPACING --- */
+  /* Figma headings usually have tight tracking. This forces it. */
+  h1, h2, h3, h4, h5, h6 {
+    @apply font-bold tracking-tight; 
   }
 }
 
@@ -181,6 +208,17 @@
       font-weight: var(--font-weight-normal);
       line-height: 1.5;
     }
+  }
+}
+
+@layer utilities {
+  /* Utility to hide scrollbars but keep functionality */
+  .no-scrollbar::-webkit-scrollbar {
+    display: none;
+  }
+  .no-scrollbar {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
   }
 }
 

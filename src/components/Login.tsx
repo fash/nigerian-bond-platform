@@ -1,7 +1,7 @@
 "use client";
 import React, { useState, FormEvent } from 'react';
-import { Card, CardHeader, CardTitle, CardDescription, CardContent } from '@/components/ui/primitives'; 
-import { Button, Input, Label } from '@/components/ui/primitives';
+import { Card, CardHeader, CardTitle, CardDescription, CardContent } from '../components/ui/primitives'; 
+import { Button, Input, Label } from '../components/ui/primitives';
 import { Lock, LogIn, AlertCircle } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 
