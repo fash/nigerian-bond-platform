@@ -1,0 +1,2950 @@
+--
+-- PostgreSQL database dump
+--
+
+\restrict visBYGNtR17EdVe3uXVIR0RiFMDS1bbkxkeV9geIA28OruJ6CUTBwMClEE0uep1
+
+-- Dumped from database version 18.1
+-- Dumped by pg_dump version 18.1
+
+SET statement_timeout = 0;
+SET lock_timeout = 0;
+SET idle_in_transaction_session_timeout = 0;
+SET transaction_timeout = 0;
+SET client_encoding = 'UTF8';
+SET standard_conforming_strings = on;
+SELECT pg_catalog.set_config('search_path', '', false);
+SET check_function_bodies = false;
+SET xmloption = content;
+SET client_min_messages = warning;
+SET row_security = off;
+
+--
+-- Name: calculate_risk_score(character varying, integer); Type: FUNCTION; Schema: public; Owner: postgres
+--
+
+CREATE FUNCTION public.calculate_risk_score(p_applicant_type character varying, p_applicant_id integer) RETURNS integer
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+    v_score INTEGER := 50; -- Default medium risk
+    v_pep_score INTEGER;
+    v_country_risk_score INTEGER;
+    v_transaction_score INTEGER;
+    v_document_score INTEGER;
+BEGIN
+    -- PEP scoring
+    SELECT 
+        CASE 
+            WHEN is_pep THEN 30
+            WHEN immediate_family_pep THEN 20
+            WHEN close_associate_pep THEN 15
+            ELSE 0
+        END INTO v_pep_score
+    FROM PEPDeclaration 
+    WHERE individual_id = p_applicant_id;
+    
+    -- Country risk (simplified - would normally use external data)
+    -- Add country risk scoring logic here
+    
+    -- Transaction pattern scoring
+    -- Add transaction analysis logic here
+    
+    -- Document verification scoring
+    -- Add document completeness logic here
+    
+    -- Calculate total (simplified for example)
+    v_score := v_score + COALESCE(v_pep_score, 0);
+    
+    -- Ensure score is between 0-100
+    v_score := GREATEST(0, LEAST(100, v_score));
+    
+    RETURN v_score;
+END;
+$$;
+
+
+ALTER FUNCTION public.calculate_risk_score(p_applicant_type character varying, p_applicant_id integer) OWNER TO postgres;
+
+--
+-- Name: calculate_term_to_maturity(date, date); Type: FUNCTION; Schema: public; Owner: postgres
+--
+
+CREATE FUNCTION public.calculate_term_to_maturity(settlement_date date, maturity_date date) RETURNS character varying
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+    years_diff INTEGER;
+    months_diff INTEGER;
+BEGIN
+    years_diff := EXTRACT(YEAR FROM maturity_date) - EXTRACT(YEAR FROM settlement_date);
+    months_diff := EXTRACT(MONTH FROM maturity_date) - EXTRACT(MONTH FROM settlement_date);
+    
+    IF months_diff < 0 THEN
+        years_diff := years_diff - 1;
+        months_diff := months_diff + 12;
+    END IF;
+    
+    RETURN years_diff || ' Years, ' || months_diff || ' Month' || 
+           CASE WHEN months_diff != 1 THEN 's' ELSE '' END;
+END;
+$$;
+
+
+ALTER FUNCTION public.calculate_term_to_maturity(settlement_date date, maturity_date date) OWNER TO postgres;
+
+--
+-- Name: generate_application_number(); Type: FUNCTION; Schema: public; Owner: postgres
+--
+
+CREATE FUNCTION public.generate_application_number() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+    NEW.application_number := 'APP-' || TO_CHAR(NEW.application_date, 'YYYYMMDD-') || 
+                             LPAD(NEXTVAL('application_number_seq')::TEXT, 6, '0');
+    RETURN NEW;
+END;
+$$;
+
+
+ALTER FUNCTION public.generate_application_number() OWNER TO postgres;
+
+--
+-- Name: trigger_aml_screening(); Type: FUNCTION; Schema: public; Owner: postgres
+--
+
+CREATE FUNCTION public.trigger_aml_screening() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+    -- Insert AML screening record for new individual applicant
+    IF TG_TABLE_NAME = 'individualapplicant' THEN
+        INSERT INTO AMLScreening (individual_id, screening_type, screening_date)
+        VALUES (NEW.individual_id, 'Sanctions', CURRENT_TIMESTAMP);
+        
+        INSERT INTO AMLScreening (individual_id, screening_type, screening_date)
+        VALUES (NEW.individual_id, 'PEP', CURRENT_TIMESTAMP);
+    END IF;
+    
+    RETURN NEW;
+END;
+$$;
+
+
+ALTER FUNCTION public.trigger_aml_screening() OWNER TO postgres;
+
+--
+-- Name: update_updated_at_column(); Type: FUNCTION; Schema: public; Owner: postgres
+--
+
+CREATE FUNCTION public.update_updated_at_column() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+    NEW.updated_at = CURRENT_TIMESTAMP;
+    RETURN NEW;
+END;
+$$;
+
+
+ALTER FUNCTION public.update_updated_at_column() OWNER TO postgres;
+
+--
+-- Name: validate_application_amount(); Type: FUNCTION; Schema: public; Owner: postgres
+--
+
+CREATE FUNCTION public.validate_application_amount() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+    -- Check minimum amount
+    IF NEW.amount_applied < 45000 THEN
+        RAISE EXCEPTION 'Application amount must be at least N45,000.00';
+    END IF;
+    
+    -- Check if amount is in multiples of N1,000
+    IF MOD(NEW.amount_applied, 1000) != 0 THEN
+        RAISE EXCEPTION 'Application amount must be in multiples of N1,000.00';
+    END IF;
+    
+    RETURN NEW;
+END;
+$$;
+
+
+ALTER FUNCTION public.validate_application_amount() OWNER TO postgres;
+
+--
+-- Name: verify_identity_linkage(character varying, character varying, integer); Type: FUNCTION; Schema: public; Owner: postgres
+--
+
+CREATE FUNCTION public.verify_identity_linkage(p_bvn character varying, p_nin character varying, p_individual_id integer) RETURNS jsonb
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+    v_result JSONB;
+    v_bvn_exists BOOLEAN;
+    v_nin_exists BOOLEAN;
+    v_match_score DECIMAL;
+BEGIN
+    -- Check if BVN exists
+    SELECT EXISTS(SELECT 1 FROM BVN_Registry WHERE bvn_number = p_bvn) INTO v_bvn_exists;
+    
+    -- Check if NIN exists
+    SELECT EXISTS(SELECT 1 FROM NIN_Registry WHERE nin_number = p_nin) INTO v_nin_exists;
+    
+    -- Calculate match score (simplified)
+    v_match_score := 
+        CASE 
+            WHEN v_bvn_exists AND v_nin_exists THEN 95.0
+            WHEN v_bvn_exists OR v_nin_exists THEN 75.0
+            ELSE 0.0
+        END;
+    
+    -- Record the linkage
+    INSERT INTO IdentityLinkage (
+        individual_id, bvn_number, nin_number, 
+        match_score, match_date, match_status
+    ) VALUES (
+        p_individual_id, p_bvn, p_nin,
+        v_match_score, CURRENT_DATE,
+        CASE 
+            WHEN v_match_score >= 90 THEN 'Perfect'
+            WHEN v_match_score >= 70 THEN 'High'
+            WHEN v_match_score >= 50 THEN 'Medium'
+            ELSE 'Low'
+        END
+    )
+    ON CONFLICT (individual_id, bvn_number, nin_number) 
+    DO UPDATE SET 
+        match_score = EXCLUDED.match_score,
+        match_date = EXCLUDED.match_date,
+        match_status = EXCLUDED.match_status;
+    
+    -- Build result
+    v_result := jsonb_build_object(
+        'bvn_verified', v_bvn_exists,
+        'nin_verified', v_nin_exists,
+        'match_score', v_match_score,
+        'match_status', CASE 
+            WHEN v_match_score >= 90 THEN 'Perfect'
+            WHEN v_match_score >= 70 THEN 'High'
+            WHEN v_match_score >= 50 THEN 'Medium'
+            ELSE 'Low'
+        END,
+        'timestamp', CURRENT_TIMESTAMP
+    );
+    
+    RETURN v_result;
+END;
+$$;
+
+
+ALTER FUNCTION public.verify_identity_linkage(p_bvn character varying, p_nin character varying, p_individual_id integer) OWNER TO postgres;
+
+SET default_tablespace = '';
+
+SET default_table_access_method = heap;
+
+--
+-- Name: amlscreening; Type: TABLE; Schema: public; Owner: postgres
+--
+
+CREATE TABLE public.amlscreening (
+    screening_id integer NOT NULL,
+    individual_id integer,
+    corporate_id integer,
+    foreign_investor_id integer,
+    screening_type character varying(50) NOT NULL,
+    screening_date timestamp without time zone DEFAULT CURRENT_TIMESTAMP,
+    screening_system character varying(100),
+    match_found boolean DEFAULT false,
+    match_details jsonb,
+    risk_score integer,
+    risk_level character varying(20),
+    review_required boolean DEFAULT false,
+    reviewed_by integer,
+    review_date date,
+    review_decision character varying(50),
+    review_notes text,
+    next_screening_date date,
+    created_at timestamp without time zone DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT amlscreening_review_decision_check CHECK (((review_decision)::text = ANY ((ARRAY['Cleared'::character varying, 'Enhanced_Due_Diligence'::character varying, 'Rejected'::character varying, 'Refer_To_Compliance'::character varying])::text[]))),
+    CONSTRAINT amlscreening_risk_level_check CHECK (((risk_level)::text = ANY ((ARRAY['Low'::character varying, 'Medium'::character varying, 'High'::character varying, 'Severe'::character varying])::text[]))),
+    CONSTRAINT amlscreening_risk_score_check CHECK (((risk_score >= 0) AND (risk_score <= 100))),
+    CONSTRAINT amlscreening_screening_type_check CHECK (((screening_type)::text = ANY ((ARRAY['Sanctions'::character varying, 'PEP'::character varying, 'Adverse_Media'::character varying, 'Watchlist'::character varying, 'Internal_Blacklist'::character varying])::text[])))
+);
+
+
+ALTER TABLE public.amlscreening OWNER TO postgres;
+
+--
+-- Name: amlscreening_screening_id_seq; Type: SEQUENCE; Schema: public; Owner: postgres
+--
+
+CREATE SEQUENCE public.amlscreening_screening_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER SEQUENCE public.amlscreening_screening_id_seq OWNER TO postgres;
+
+--
+-- Name: amlscreening_screening_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: postgres
+--
+
+ALTER SEQUENCE public.amlscreening_screening_id_seq OWNED BY public.amlscreening.screening_id;
+
+
+--
+-- Name: application_number_seq; Type: SEQUENCE; Schema: public; Owner: postgres
+--
+
+CREATE SEQUENCE public.application_number_seq
+    START WITH 100001
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER SEQUENCE public.application_number_seq OWNER TO postgres;
+
+--
+-- Name: applicationaudit; Type: TABLE; Schema: public; Owner: postgres
+--
+
+CREATE TABLE public.applicationaudit (
+    audit_id integer NOT NULL,
+    application_id integer NOT NULL,
+    action character varying(50) NOT NULL,
+    action_by character varying(100),
+    action_timestamp timestamp without time zone DEFAULT CURRENT_TIMESTAMP,
+    old_values jsonb,
+    new_values jsonb,
+    ip_address inet,
+    user_agent text
+);
+
+
+ALTER TABLE public.applicationaudit OWNER TO postgres;
+
+--
+-- Name: applicationaudit_audit_id_seq; Type: SEQUENCE; Schema: public; Owner: postgres
+--
+
+CREATE SEQUENCE public.applicationaudit_audit_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER SEQUENCE public.applicationaudit_audit_id_seq OWNER TO postgres;
+
+--
+-- Name: applicationaudit_audit_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: postgres
+--
+
+ALTER SEQUENCE public.applicationaudit_audit_id_seq OWNED BY public.applicationaudit.audit_id;
+
+
+--
+-- Name: applicationbankdetail; Type: TABLE; Schema: public; Owner: postgres
+--
+
+CREATE TABLE public.applicationbankdetail (
+    bank_detail_id integer NOT NULL,
+    application_id integer NOT NULL,
+    applicant_type character varying(10),
+    individual_id integer,
+    corporate_id integer,
+    bank_name character varying(100) NOT NULL,
+    account_number character varying(50) NOT NULL,
+    account_name character varying(200),
+    bvn character varying(11),
+    is_primary_account boolean DEFAULT true,
+    purpose character varying(50) DEFAULT 'Interest Payment'::character varying,
+    created_at timestamp without time zone DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT applicationbankdetail_applicant_type_check CHECK (((applicant_type)::text = ANY ((ARRAY['Individual'::character varying, 'Corporate'::character varying])::text[])))
+);
+
+
+ALTER TABLE public.applicationbankdetail OWNER TO postgres;
+
+--
+-- Name: applicationbankdetail_bank_detail_id_seq; Type: SEQUENCE; Schema: public; Owner: postgres
+--
+
+CREATE SEQUENCE public.applicationbankdetail_bank_detail_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER SEQUENCE public.applicationbankdetail_bank_detail_id_seq OWNER TO postgres;
+
+--
+-- Name: applicationbankdetail_bank_detail_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: postgres
+--
+
+ALTER SEQUENCE public.applicationbankdetail_bank_detail_id_seq OWNED BY public.applicationbankdetail.bank_detail_id;
+
+
+--
+-- Name: applicationdocument; Type: TABLE; Schema: public; Owner: postgres
+--
+
+CREATE TABLE public.applicationdocument (
+    document_id integer NOT NULL,
+    application_id integer NOT NULL,
+    document_type character varying(50) NOT NULL,
+    document_name character varying(200) NOT NULL,
+    document_path character varying(500) NOT NULL,
+    document_format character varying(10),
+    upload_date timestamp without time zone DEFAULT CURRENT_TIMESTAMP,
+    verified boolean DEFAULT false,
+    verified_by integer,
+    verified_date date,
+    CONSTRAINT applicationdocument_document_format_check CHECK (((document_format)::text = ANY ((ARRAY['PDF'::character varying, 'JPG'::character varying, 'PNG'::character varying, 'TIF'::character varying])::text[]))),
+    CONSTRAINT applicationdocument_document_type_check CHECK (((document_type)::text = ANY ((ARRAY['Passport'::character varying, 'ID_Card'::character varying, 'Utility_Bill'::character varying, 'Bank_Statement'::character varying, 'Certificate_Incorporation'::character varying, 'Board_Resolution'::character varying, 'Signature_Specimen'::character varying, 'Payment_Receipt'::character varying, 'Other'::character varying])::text[])))
+);
+
+
+ALTER TABLE public.applicationdocument OWNER TO postgres;
+
+--
+-- Name: applicationdocument_document_id_seq; Type: SEQUENCE; Schema: public; Owner: postgres
+--
+
+CREATE SEQUENCE public.applicationdocument_document_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER SEQUENCE public.applicationdocument_document_id_seq OWNER TO postgres;
+
+--
+-- Name: applicationdocument_document_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: postgres
+--
+
+ALTER SEQUENCE public.applicationdocument_document_id_seq OWNED BY public.applicationdocument.document_id;
+
+
+--
+-- Name: applicationnote; Type: TABLE; Schema: public; Owner: postgres
+--
+
+CREATE TABLE public.applicationnote (
+    note_id integer NOT NULL,
+    application_id integer NOT NULL,
+    note_type character varying(50),
+    note_text text NOT NULL,
+    created_by character varying(100),
+    created_at timestamp without time zone DEFAULT CURRENT_TIMESTAMP,
+    is_resolved boolean DEFAULT false,
+    CONSTRAINT applicationnote_note_type_check CHECK (((note_type)::text = ANY ((ARRAY['Internal'::character varying, 'Client'::character varying, 'Compliance'::character varying])::text[])))
+);
+
+
+ALTER TABLE public.applicationnote OWNER TO postgres;
+
+--
+-- Name: applicationnote_note_id_seq; Type: SEQUENCE; Schema: public; Owner: postgres
+--
+
+CREATE SEQUENCE public.applicationnote_note_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER SEQUENCE public.applicationnote_note_id_seq OWNER TO postgres;
+
+--
+-- Name: applicationnote_note_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: postgres
+--
+
+ALTER SEQUENCE public.applicationnote_note_id_seq OWNED BY public.applicationnote.note_id;
+
+
+--
+-- Name: bondsubscription; Type: TABLE; Schema: public; Owner: postgres
+--
+
+CREATE TABLE public.bondsubscription (
+    application_id integer NOT NULL,
+    application_number character varying(50),
+    application_date date DEFAULT CURRENT_DATE NOT NULL,
+    application_type character varying(20) NOT NULL,
+    bond_id integer,
+    auction_id integer,
+    amount_applied numeric(15,2) NOT NULL,
+    payment_reference character varying(100),
+    payment_date date,
+    distribution_agent_id integer,
+    status character varying(50) DEFAULT 'Submitted'::character varying,
+    created_at timestamp without time zone DEFAULT CURRENT_TIMESTAMP,
+    updated_at timestamp without time zone DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT bondsubscription_amount_applied_check CHECK (((amount_applied >= (45000)::numeric) AND (amount_applied <= (450000000)::numeric))),
+    CONSTRAINT bondsubscription_application_type_check CHECK (((application_type)::text = ANY ((ARRAY['Individual'::character varying, 'Corporate'::character varying, 'Joint'::character varying])::text[]))),
+    CONSTRAINT bondsubscription_status_check CHECK (((status)::text = ANY ((ARRAY['Submitted'::character varying, 'Under Review'::character varying, 'Approved'::character varying, 'Rejected'::character varying, 'Allotted'::character varying, 'Settled'::character varying])::text[])))
+);
+
+
+ALTER TABLE public.bondsubscription OWNER TO postgres;
+
+--
+-- Name: applicationstatistics; Type: VIEW; Schema: public; Owner: postgres
+--
+
+CREATE VIEW public.applicationstatistics AS
+ SELECT date_trunc('month'::text, (application_date)::timestamp with time zone) AS month,
+    application_type,
+    count(*) AS total_applications,
+    sum(
+        CASE
+            WHEN ((status)::text = 'Approved'::text) THEN 1
+            ELSE 0
+        END) AS approved,
+    sum(
+        CASE
+            WHEN ((status)::text = 'Rejected'::text) THEN 1
+            ELSE 0
+        END) AS rejected,
+    sum(amount_applied) AS total_amount_applied,
+    avg(amount_applied) AS average_application_amount
+   FROM public.bondsubscription
+  GROUP BY (date_trunc('month'::text, (application_date)::timestamp with time zone)), application_type
+  ORDER BY (date_trunc('month'::text, (application_date)::timestamp with time zone)) DESC;
+
+
+ALTER VIEW public.applicationstatistics OWNER TO postgres;
+
+--
+-- Name: applicationvalidationrule; Type: TABLE; Schema: public; Owner: postgres
+--
+
+CREATE TABLE public.applicationvalidationrule (
+    rule_id integer NOT NULL,
+    rule_name character varying(100) NOT NULL,
+    rule_description text,
+    rule_type character varying(50),
+    rule_condition text,
+    error_message text,
+    is_active boolean DEFAULT true,
+    created_at timestamp without time zone DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT applicationvalidationrule_rule_type_check CHECK (((rule_type)::text = ANY ((ARRAY['Amount'::character varying, 'Document'::character varying, 'Identity'::character varying, 'Eligibility'::character varying])::text[])))
+);
+
+
+ALTER TABLE public.applicationvalidationrule OWNER TO postgres;
+
+--
+-- Name: applicationvalidationrule_rule_id_seq; Type: SEQUENCE; Schema: public; Owner: postgres
+--
+
+CREATE SEQUENCE public.applicationvalidationrule_rule_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER SEQUENCE public.applicationvalidationrule_rule_id_seq OWNER TO postgres;
+
+--
+-- Name: applicationvalidationrule_rule_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: postgres
+--
+
+ALTER SEQUENCE public.applicationvalidationrule_rule_id_seq OWNED BY public.applicationvalidationrule.rule_id;
+
+
+--
+-- Name: applicationwitness; Type: TABLE; Schema: public; Owner: postgres
+--
+
+CREATE TABLE public.applicationwitness (
+    witness_id integer NOT NULL,
+    application_id integer NOT NULL,
+    individual_id integer NOT NULL,
+    witness_type character varying(20),
+    witness_name character varying(200) NOT NULL,
+    witness_employee_id character varying(50),
+    witness_agency character varying(100),
+    explanation_provided boolean DEFAULT false,
+    language_used character varying(50),
+    witness_signature_path character varying(500),
+    witness_date date DEFAULT CURRENT_DATE NOT NULL,
+    created_at timestamp without time zone DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT applicationwitness_witness_type_check CHECK (((witness_type)::text = ANY ((ARRAY['Agent'::character varying, 'Notary'::character varying, 'Other'::character varying])::text[])))
+);
+
+
+ALTER TABLE public.applicationwitness OWNER TO postgres;
+
+--
+-- Name: applicationwitness_witness_id_seq; Type: SEQUENCE; Schema: public; Owner: postgres
+--
+
+CREATE SEQUENCE public.applicationwitness_witness_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER SEQUENCE public.applicationwitness_witness_id_seq OWNER TO postgres;
+
+--
+-- Name: applicationwitness_witness_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: postgres
+--
+
+ALTER SEQUENCE public.applicationwitness_witness_id_seq OWNED BY public.applicationwitness.witness_id;
+
+
+--
+-- Name: auction; Type: TABLE; Schema: public; Owner: postgres
+--
+
+CREATE TABLE public.auction (
+    auction_id integer NOT NULL,
+    bond_id integer NOT NULL,
+    auction_date date NOT NULL,
+    settlement_date date NOT NULL,
+    amount_offered numeric(15,2) NOT NULL,
+    term_to_maturity character varying(50),
+    created_at timestamp without time zone DEFAULT CURRENT_TIMESTAMP
+);
+
+
+ALTER TABLE public.auction OWNER TO postgres;
+
+--
+-- Name: auction_auction_id_seq; Type: SEQUENCE; Schema: public; Owner: postgres
+--
+
+CREATE SEQUENCE public.auction_auction_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER SEQUENCE public.auction_auction_id_seq OWNER TO postgres;
+
+--
+-- Name: auction_auction_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: postgres
+--
+
+ALTER SEQUENCE public.auction_auction_id_seq OWNED BY public.auction.auction_id;
+
+
+--
+-- Name: auctionresult; Type: TABLE; Schema: public; Owner: postgres
+--
+
+CREATE TABLE public.auctionresult (
+    result_id integer NOT NULL,
+    auction_id integer NOT NULL,
+    total_bids integer NOT NULL,
+    successful_bids integer NOT NULL,
+    subscription_amount numeric(15,2) NOT NULL,
+    amount_allotted numeric(15,2) NOT NULL,
+    non_competitive_allotment numeric(15,2),
+    bid_range_min numeric(5,2) NOT NULL,
+    bid_range_max numeric(5,2) NOT NULL,
+    marginal_rate numeric(5,2) NOT NULL,
+    original_coupon_maintained boolean DEFAULT true,
+    created_at timestamp without time zone DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT check_bid_range CHECK ((bid_range_min <= bid_range_max)),
+    CONSTRAINT check_marginal_rate_range CHECK (((marginal_rate >= (0)::numeric) AND (marginal_rate <= (100)::numeric)))
+);
+
+
+ALTER TABLE public.auctionresult OWNER TO postgres;
+
+--
+-- Name: auctionresult_result_id_seq; Type: SEQUENCE; Schema: public; Owner: postgres
+--
+
+CREATE SEQUENCE public.auctionresult_result_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER SEQUENCE public.auctionresult_result_id_seq OWNER TO postgres;
+
+--
+-- Name: auctionresult_result_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: postgres
+--
+
+ALTER SEQUENCE public.auctionresult_result_id_seq OWNED BY public.auctionresult.result_id;
+
+
+--
+-- Name: bond; Type: TABLE; Schema: public; Owner: postgres
+--
+
+CREATE TABLE public.bond (
+    bond_id integer NOT NULL,
+    bond_name character varying(100) NOT NULL,
+    original_coupon_rate numeric(5,2) NOT NULL,
+    maturity_date date NOT NULL,
+    tenor_years integer NOT NULL,
+    created_at timestamp without time zone DEFAULT CURRENT_TIMESTAMP,
+    updated_at timestamp without time zone DEFAULT CURRENT_TIMESTAMP
+);
+
+
+ALTER TABLE public.bond OWNER TO postgres;
+
+--
+-- Name: bond_bond_id_seq; Type: SEQUENCE; Schema: public; Owner: postgres
+--
+
+CREATE SEQUENCE public.bond_bond_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER SEQUENCE public.bond_bond_id_seq OWNER TO postgres;
+
+--
+-- Name: bond_bond_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: postgres
+--
+
+ALTER SEQUENCE public.bond_bond_id_seq OWNED BY public.bond.bond_id;
+
+
+--
+-- Name: bondauctionsummary; Type: VIEW; Schema: public; Owner: postgres
+--
+
+CREATE VIEW public.bondauctionsummary AS
+ SELECT b.bond_name,
+    b.original_coupon_rate,
+    b.maturity_date,
+    b.tenor_years,
+    a.auction_date,
+    a.settlement_date,
+    a.amount_offered,
+    a.term_to_maturity,
+    ar.total_bids,
+    ar.successful_bids,
+    ar.subscription_amount,
+    ar.amount_allotted,
+    ar.non_competitive_allotment,
+    ar.bid_range_min,
+    ar.bid_range_max,
+    ar.marginal_rate,
+    ar.original_coupon_maintained,
+    round((ar.subscription_amount / NULLIF(a.amount_offered, (0)::numeric)), 4) AS subscription_ratio,
+    round((ar.amount_allotted / NULLIF(a.amount_offered, (0)::numeric)), 4) AS allotment_ratio,
+    round((((ar.successful_bids)::numeric / (NULLIF(ar.total_bids, 0))::numeric) * (100)::numeric), 2) AS bid_success_percentage
+   FROM ((public.auction a
+     JOIN public.bond b ON ((a.bond_id = b.bond_id)))
+     JOIN public.auctionresult ar ON ((a.auction_id = ar.auction_id)));
+
+
+ALTER VIEW public.bondauctionsummary OWNER TO postgres;
+
+--
+-- Name: bondsubscription_application_id_seq; Type: SEQUENCE; Schema: public; Owner: postgres
+--
+
+CREATE SEQUENCE public.bondsubscription_application_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER SEQUENCE public.bondsubscription_application_id_seq OWNER TO postgres;
+
+--
+-- Name: bondsubscription_application_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: postgres
+--
+
+ALTER SEQUENCE public.bondsubscription_application_id_seq OWNED BY public.bondsubscription.application_id;
+
+
+--
+-- Name: bvn_registry; Type: TABLE; Schema: public; Owner: postgres
+--
+
+CREATE TABLE public.bvn_registry (
+    bvn_id integer NOT NULL,
+    bvn_number character varying(11) NOT NULL,
+    individual_id integer,
+    enrollment_date date NOT NULL,
+    enrollment_bank character varying(100) NOT NULL,
+    enrollment_location character varying(200),
+    biometric_data_hash character varying(500),
+    verification_status character varying(20) DEFAULT 'Pending'::character varying,
+    verification_date date,
+    verification_method character varying(50),
+    last_updated timestamp without time zone DEFAULT CURRENT_TIMESTAMP,
+    linked_accounts_count integer DEFAULT 0,
+    is_active boolean DEFAULT true,
+    remarks text,
+    CONSTRAINT bvn_registry_verification_method_check CHECK (((verification_method)::text = ANY ((ARRAY['Direct'::character varying, 'ThirdParty'::character varying, 'API'::character varying, 'Manual'::character varying])::text[]))),
+    CONSTRAINT bvn_registry_verification_status_check CHECK (((verification_status)::text = ANY ((ARRAY['Pending'::character varying, 'Verified'::character varying, 'Failed'::character varying, 'Suspended'::character varying, 'Expired'::character varying])::text[])))
+);
+
+
+ALTER TABLE public.bvn_registry OWNER TO postgres;
+
+--
+-- Name: bvn_registry_bvn_id_seq; Type: SEQUENCE; Schema: public; Owner: postgres
+--
+
+CREATE SEQUENCE public.bvn_registry_bvn_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER SEQUENCE public.bvn_registry_bvn_id_seq OWNER TO postgres;
+
+--
+-- Name: bvn_registry_bvn_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: postgres
+--
+
+ALTER SEQUENCE public.bvn_registry_bvn_id_seq OWNED BY public.bvn_registry.bvn_id;
+
+
+--
+-- Name: complianceaction; Type: TABLE; Schema: public; Owner: postgres
+--
+
+CREATE TABLE public.complianceaction (
+    action_id integer NOT NULL,
+    case_id integer,
+    action_type character varying(50),
+    action_date date NOT NULL,
+    action_by integer NOT NULL,
+    description text NOT NULL,
+    deadline date,
+    status character varying(20),
+    outcome text,
+    follow_up_required boolean DEFAULT false,
+    follow_up_date date,
+    created_at timestamp without time zone DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT complianceaction_action_type_check CHECK (((action_type)::text = ANY ((ARRAY['Document_Request'::character varying, 'Investigation'::character varying, 'Account_Freeze'::character varying, 'Transaction_Block'::character varying, 'Enhanced_Monitoring'::character varying, 'Customer_Interview'::character varying, 'Regulatory_Report'::character varying, 'Internal_Report'::character varying])::text[]))),
+    CONSTRAINT complianceaction_status_check CHECK (((status)::text = ANY ((ARRAY['Pending'::character varying, 'In Progress'::character varying, 'Completed'::character varying, 'Escalated'::character varying])::text[])))
+);
+
+
+ALTER TABLE public.complianceaction OWNER TO postgres;
+
+--
+-- Name: complianceaction_action_id_seq; Type: SEQUENCE; Schema: public; Owner: postgres
+--
+
+CREATE SEQUENCE public.complianceaction_action_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER SEQUENCE public.complianceaction_action_id_seq OWNER TO postgres;
+
+--
+-- Name: complianceaction_action_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: postgres
+--
+
+ALTER SEQUENCE public.complianceaction_action_id_seq OWNED BY public.complianceaction.action_id;
+
+
+--
+-- Name: corporateapplicant; Type: TABLE; Schema: public; Owner: postgres
+--
+
+CREATE TABLE public.corporateapplicant (
+    corporate_id integer NOT NULL,
+    application_id integer NOT NULL,
+    company_name character varying(200) NOT NULL,
+    business_type character varying(100),
+    rc_number character varying(50),
+    incorporation_date date,
+    corporate_address text,
+    contact_person_name character varying(200),
+    contact_person_position character varying(100),
+    contact_phone_number character varying(20),
+    contact_email character varying(100),
+    contact_passport_number character varying(50),
+    authorized_signatory_name character varying(200),
+    authorized_signature_path character varying(500),
+    corporate_seal_used boolean DEFAULT false,
+    bank_name character varying(100),
+    bank_account_number character varying(50),
+    bvn character varying(11),
+    investor_category character varying(50) NOT NULL,
+    created_at timestamp without time zone DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT corporateapplicant_investor_category_check CHECK (((investor_category)::text = ANY ((ARRAY['Insurance Corporate'::character varying, 'Non-Bank Financial Institution'::character varying, 'Co-operative Society'::character varying, 'Government Agencies'::character varying, 'Staff Scheme'::character varying, 'Micro Finance Bank'::character varying, 'Foreign Investor'::character varying, 'Other Corporate'::character varying])::text[])))
+);
+
+
+ALTER TABLE public.corporateapplicant OWNER TO postgres;
+
+--
+-- Name: corporateapplicant_corporate_id_seq; Type: SEQUENCE; Schema: public; Owner: postgres
+--
+
+CREATE SEQUENCE public.corporateapplicant_corporate_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER SEQUENCE public.corporateapplicant_corporate_id_seq OWNER TO postgres;
+
+--
+-- Name: corporateapplicant_corporate_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: postgres
+--
+
+ALTER SEQUENCE public.corporateapplicant_corporate_id_seq OWNED BY public.corporateapplicant.corporate_id;
+
+
+--
+-- Name: distributionagent; Type: TABLE; Schema: public; Owner: postgres
+--
+
+CREATE TABLE public.distributionagent (
+    agent_id integer NOT NULL,
+    agent_name character varying(200) NOT NULL,
+    agent_type character varying(50),
+    contact_person character varying(100),
+    phone_number character varying(20),
+    email character varying(100),
+    address text,
+    is_active boolean DEFAULT true,
+    created_at timestamp without time zone DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT distributionagent_agent_type_check CHECK (((agent_type)::text = ANY ((ARRAY['Stockbroker'::character varying, 'Bank'::character varying, 'Other'::character varying])::text[])))
+);
+
+
+ALTER TABLE public.distributionagent OWNER TO postgres;
+
+--
+-- Name: corporateapplicationsummary; Type: VIEW; Schema: public; Owner: postgres
+--
+
+CREATE VIEW public.corporateapplicationsummary AS
+ SELECT bs.application_id,
+    bs.application_number,
+    bs.application_date,
+    bs.amount_applied,
+    bs.status,
+    ca.company_name,
+    ca.business_type,
+    ca.rc_number,
+    ca.investor_category,
+    ca.contact_person_name,
+    da.agent_name AS distribution_agent,
+    count(DISTINCT ad.document_id) AS documents_submitted
+   FROM (((public.bondsubscription bs
+     JOIN public.corporateapplicant ca ON ((bs.application_id = ca.application_id)))
+     LEFT JOIN public.distributionagent da ON ((bs.distribution_agent_id = da.agent_id)))
+     LEFT JOIN public.applicationdocument ad ON ((bs.application_id = ad.application_id)))
+  WHERE ((bs.application_type)::text = 'Corporate'::text)
+  GROUP BY bs.application_id, bs.application_number, bs.application_date, bs.amount_applied, bs.status, ca.company_name, ca.business_type, ca.rc_number, ca.investor_category, ca.contact_person_name, da.agent_name;
+
+
+ALTER VIEW public.corporateapplicationsummary OWNER TO postgres;
+
+--
+-- Name: customerduediligence; Type: TABLE; Schema: public; Owner: postgres
+--
+
+CREATE TABLE public.customerduediligence (
+    cdd_id integer NOT NULL,
+    applicant_type character varying(20),
+    applicant_id integer,
+    cdd_level character varying(20),
+    risk_category character varying(20),
+    documents_verified jsonb,
+    verification_date date,
+    verified_by integer,
+    source_of_funds_verified boolean DEFAULT false,
+    source_of_wealth_verified boolean DEFAULT false,
+    beneficial_owners_verified boolean DEFAULT false,
+    ongoing_monitoring boolean DEFAULT true,
+    next_review_date date,
+    review_frequency character varying(20),
+    notes text,
+    created_at timestamp without time zone DEFAULT CURRENT_TIMESTAMP,
+    updated_at timestamp without time zone DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT customerduediligence_applicant_type_check CHECK (((applicant_type)::text = ANY ((ARRAY['Individual'::character varying, 'Corporate'::character varying, 'Foreign'::character varying])::text[]))),
+    CONSTRAINT customerduediligence_cdd_level_check CHECK (((cdd_level)::text = ANY ((ARRAY['Simplified'::character varying, 'Standard'::character varying, 'Enhanced'::character varying])::text[]))),
+    CONSTRAINT customerduediligence_risk_category_check CHECK (((risk_category)::text = ANY ((ARRAY['Low'::character varying, 'Medium'::character varying, 'High'::character varying])::text[])))
+);
+
+
+ALTER TABLE public.customerduediligence OWNER TO postgres;
+
+--
+-- Name: customerduediligence_cdd_id_seq; Type: SEQUENCE; Schema: public; Owner: postgres
+--
+
+CREATE SEQUENCE public.customerduediligence_cdd_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER SEQUENCE public.customerduediligence_cdd_id_seq OWNER TO postgres;
+
+--
+-- Name: customerduediligence_cdd_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: postgres
+--
+
+ALTER SEQUENCE public.customerduediligence_cdd_id_seq OWNED BY public.customerduediligence.cdd_id;
+
+
+--
+-- Name: diasporainvestor; Type: TABLE; Schema: public; Owner: postgres
+--
+
+CREATE TABLE public.diasporainvestor (
+    diaspora_id integer NOT NULL,
+    foreign_investor_id integer,
+    nigerian_origin boolean DEFAULT true NOT NULL,
+    has_nigerian_bvn boolean DEFAULT false,
+    bvn_number character varying(11),
+    has_nigerian_nin boolean DEFAULT false,
+    nin_number character varying(11),
+    state_of_origin character varying(50),
+    local_government_area character varying(100),
+    hometown character varying(100),
+    nigerian_contact_address text,
+    nigerian_contact_person character varying(200),
+    nigerian_contact_phone character varying(20),
+    dual_citizenship boolean DEFAULT false,
+    dual_citizenship_country character varying(100),
+    nigerian_bank_account_exists boolean DEFAULT false,
+    nigerian_bank_name character varying(100),
+    nigerian_account_number character varying(20),
+    remittance_frequency character varying(20),
+    annual_remittance_amount numeric(15,2),
+    diaspora_association_member boolean DEFAULT false,
+    association_name character varying(200),
+    investment_motivation text,
+    created_at timestamp without time zone DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT diasporainvestor_remittance_frequency_check CHECK (((remittance_frequency)::text = ANY ((ARRAY['Monthly'::character varying, 'Quarterly'::character varying, 'Annual'::character varying, 'Occasional'::character varying])::text[])))
+);
+
+
+ALTER TABLE public.diasporainvestor OWNER TO postgres;
+
+--
+-- Name: diasporainvestor_diaspora_id_seq; Type: SEQUENCE; Schema: public; Owner: postgres
+--
+
+CREATE SEQUENCE public.diasporainvestor_diaspora_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER SEQUENCE public.diasporainvestor_diaspora_id_seq OWNER TO postgres;
+
+--
+-- Name: diasporainvestor_diaspora_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: postgres
+--
+
+ALTER SEQUENCE public.diasporainvestor_diaspora_id_seq OWNED BY public.diasporainvestor.diaspora_id;
+
+
+--
+-- Name: distributionagent_agent_id_seq; Type: SEQUENCE; Schema: public; Owner: postgres
+--
+
+CREATE SEQUENCE public.distributionagent_agent_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER SEQUENCE public.distributionagent_agent_id_seq OWNER TO postgres;
+
+--
+-- Name: distributionagent_agent_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: postgres
+--
+
+ALTER SEQUENCE public.distributionagent_agent_id_seq OWNED BY public.distributionagent.agent_id;
+
+
+--
+-- Name: foreigninvestor; Type: TABLE; Schema: public; Owner: postgres
+--
+
+CREATE TABLE public.foreigninvestor (
+    foreign_investor_id integer NOT NULL,
+    application_id integer,
+    investor_type character varying(50) NOT NULL,
+    country_of_origin character varying(100) NOT NULL,
+    country_of_residence character varying(100) NOT NULL,
+    nationality character varying(100),
+    tax_residency_country character varying(100),
+    tax_identification_number character varying(50),
+    passport_number character varying(50) NOT NULL,
+    passport_expiry_date date,
+    visa_type character varying(50),
+    visa_expiry_date date,
+    foreign_address text NOT NULL,
+    foreign_phone character varying(20),
+    foreign_email character varying(100),
+    foreign_bank_name character varying(100),
+    foreign_bank_account character varying(50),
+    iban_number character varying(34),
+    swift_code character varying(11),
+    intermediary_bank character varying(100),
+    source_of_funds character varying(50),
+    investment_purpose text,
+    regulatory_status character varying(50),
+    sanctions_check boolean DEFAULT false,
+    sanctions_check_date date,
+    created_at timestamp without time zone DEFAULT CURRENT_TIMESTAMP,
+    updated_at timestamp without time zone DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT foreigninvestor_investor_type_check CHECK (((investor_type)::text = ANY ((ARRAY['Individual'::character varying, 'Corporate'::character varying, 'Institutional'::character varying])::text[]))),
+    CONSTRAINT foreigninvestor_regulatory_status_check CHECK (((regulatory_status)::text = ANY ((ARRAY['Compliant'::character varying, 'Restricted'::character varying, 'Prohibited'::character varying])::text[]))),
+    CONSTRAINT foreigninvestor_source_of_funds_check CHECK (((source_of_funds)::text = ANY ((ARRAY['Savings'::character varying, 'Investment'::character varying, 'Inheritance'::character varying, 'Business'::character varying, 'Other'::character varying])::text[])))
+);
+
+
+ALTER TABLE public.foreigninvestor OWNER TO postgres;
+
+--
+-- Name: foreigninvestor_foreign_investor_id_seq; Type: SEQUENCE; Schema: public; Owner: postgres
+--
+
+CREATE SEQUENCE public.foreigninvestor_foreign_investor_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER SEQUENCE public.foreigninvestor_foreign_investor_id_seq OWNER TO postgres;
+
+--
+-- Name: foreigninvestor_foreign_investor_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: postgres
+--
+
+ALTER SEQUENCE public.foreigninvestor_foreign_investor_id_seq OWNED BY public.foreigninvestor.foreign_investor_id;
+
+
+--
+-- Name: foreigninvestordocument; Type: TABLE; Schema: public; Owner: postgres
+--
+
+CREATE TABLE public.foreigninvestordocument (
+    document_id integer NOT NULL,
+    foreign_investor_id integer,
+    document_type character varying(50) NOT NULL,
+    document_name character varying(200) NOT NULL,
+    document_number character varying(100),
+    issuing_country character varying(100),
+    issue_date date,
+    expiry_date date,
+    document_path character varying(500),
+    verified boolean DEFAULT false,
+    verified_by integer,
+    verification_date date,
+    verification_notes text,
+    created_at timestamp without time zone DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT foreigninvestordocument_document_type_check CHECK (((document_type)::text = ANY ((ARRAY['Passport'::character varying, 'Visa'::character varying, 'Residence_Permit'::character varying, 'Tax_Certificate'::character varying, 'Bank_Statement_Foreign'::character varying, 'Proof_Address_Foreign'::character varying, 'Source_Wealth'::character varying, 'Corporate_Registration_Foreign'::character varying, 'Directors_List'::character varying, 'UBO_Declaration'::character varying, 'Other'::character varying])::text[])))
+);
+
+
+ALTER TABLE public.foreigninvestordocument OWNER TO postgres;
+
+--
+-- Name: foreigninvestordocument_document_id_seq; Type: SEQUENCE; Schema: public; Owner: postgres
+--
+
+CREATE SEQUENCE public.foreigninvestordocument_document_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER SEQUENCE public.foreigninvestordocument_document_id_seq OWNER TO postgres;
+
+--
+-- Name: foreigninvestordocument_document_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: postgres
+--
+
+ALTER SEQUENCE public.foreigninvestordocument_document_id_seq OWNED BY public.foreigninvestordocument.document_id;
+
+
+--
+-- Name: identitylinkage; Type: TABLE; Schema: public; Owner: postgres
+--
+
+CREATE TABLE public.identitylinkage (
+    linkage_id integer NOT NULL,
+    individual_id integer,
+    bvn_number character varying(11),
+    nin_number character varying(11),
+    passport_number character varying(50),
+    drivers_license_number character varying(50),
+    voter_card_number character varying(50),
+    match_score numeric(5,2),
+    match_status character varying(20),
+    match_date date,
+    verification_agent character varying(100),
+    confidence_level character varying(20),
+    created_at timestamp without time zone DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT identitylinkage_confidence_level_check CHECK (((confidence_level)::text = ANY ((ARRAY['Very High'::character varying, 'High'::character varying, 'Medium'::character varying, 'Low'::character varying])::text[]))),
+    CONSTRAINT identitylinkage_match_score_check CHECK (((match_score >= (0)::numeric) AND (match_score <= (100)::numeric))),
+    CONSTRAINT identitylinkage_match_status_check CHECK (((match_status)::text = ANY ((ARRAY['Perfect'::character varying, 'High'::character varying, 'Medium'::character varying, 'Low'::character varying, 'Failed'::character varying])::text[])))
+);
+
+
+ALTER TABLE public.identitylinkage OWNER TO postgres;
+
+--
+-- Name: identitylinkage_linkage_id_seq; Type: SEQUENCE; Schema: public; Owner: postgres
+--
+
+CREATE SEQUENCE public.identitylinkage_linkage_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER SEQUENCE public.identitylinkage_linkage_id_seq OWNER TO postgres;
+
+--
+-- Name: identitylinkage_linkage_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: postgres
+--
+
+ALTER SEQUENCE public.identitylinkage_linkage_id_seq OWNED BY public.identitylinkage.linkage_id;
+
+
+--
+-- Name: individualapplicant; Type: TABLE; Schema: public; Owner: postgres
+--
+
+CREATE TABLE public.individualapplicant (
+    individual_id integer NOT NULL,
+    application_id integer NOT NULL,
+    applicant_order integer DEFAULT 1,
+    title character varying(10),
+    surname character varying(100) NOT NULL,
+    first_name character varying(100) NOT NULL,
+    other_names character varying(100),
+    occupation character varying(100),
+    phone_number character varying(20),
+    email character varying(100),
+    date_of_birth date,
+    passport_number character varying(50),
+    mother_maiden_name character varying(100),
+    next_of_kin_name character varying(200),
+    next_of_kin_relationship character varying(50),
+    next_of_kin_phone character varying(20),
+    residential_address text,
+    residency_classification character varying(20) NOT NULL,
+    bank_name character varying(100),
+    bank_account_number character varying(50),
+    bvn character varying(11),
+    signature_image_path character varying(500),
+    is_primary_applicant boolean DEFAULT false,
+    literacy_status character varying(20) DEFAULT 'Literate'::character varying,
+    witness_name character varying(200),
+    witness_employee_id integer,
+    created_at timestamp without time zone DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT individualapplicant_literacy_status_check CHECK (((literacy_status)::text = ANY ((ARRAY['Literate'::character varying, 'Illiterate'::character varying])::text[]))),
+    CONSTRAINT individualapplicant_residency_classification_check CHECK (((residency_classification)::text = ANY ((ARRAY['Resident'::character varying, 'Non-Resident'::character varying])::text[]))),
+    CONSTRAINT individualapplicant_title_check CHECK (((title)::text = ANY ((ARRAY['Mr'::character varying, 'Mrs'::character varying, 'Miss'::character varying, 'Ms'::character varying, 'Dr'::character varying, 'Prof'::character varying])::text[])))
+);
+
+
+ALTER TABLE public.individualapplicant OWNER TO postgres;
+
+--
+-- Name: individualapplicant_individual_id_seq; Type: SEQUENCE; Schema: public; Owner: postgres
+--
+
+CREATE SEQUENCE public.individualapplicant_individual_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER SEQUENCE public.individualapplicant_individual_id_seq OWNER TO postgres;
+
+--
+-- Name: individualapplicant_individual_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: postgres
+--
+
+ALTER SEQUENCE public.individualapplicant_individual_id_seq OWNED BY public.individualapplicant.individual_id;
+
+
+--
+-- Name: individualapplicationsummary; Type: VIEW; Schema: public; Owner: postgres
+--
+
+CREATE VIEW public.individualapplicationsummary AS
+ SELECT bs.application_id,
+    bs.application_number,
+    bs.application_date,
+    bs.amount_applied,
+    bs.status,
+    (((ia.surname)::text || ', '::text) || (ia.first_name)::text) AS full_name,
+    ia.title,
+    ia.occupation,
+    ia.residency_classification,
+    ia.bank_name,
+    da.agent_name AS distribution_agent,
+    count(DISTINCT ad.document_id) AS documents_submitted
+   FROM (((public.bondsubscription bs
+     JOIN public.individualapplicant ia ON ((bs.application_id = ia.application_id)))
+     LEFT JOIN public.distributionagent da ON ((bs.distribution_agent_id = da.agent_id)))
+     LEFT JOIN public.applicationdocument ad ON ((bs.application_id = ad.application_id)))
+  WHERE ((bs.application_type)::text = ANY ((ARRAY['Individual'::character varying, 'Joint'::character varying])::text[]))
+  GROUP BY bs.application_id, bs.application_number, bs.application_date, bs.amount_applied, bs.status, ia.surname, ia.first_name, ia.title, ia.occupation, ia.residency_classification, ia.bank_name, da.agent_name;
+
+
+ALTER VIEW public.individualapplicationsummary OWNER TO postgres;
+
+--
+-- Name: nin_registry; Type: TABLE; Schema: public; Owner: postgres
+--
+
+CREATE TABLE public.nin_registry (
+    nin_id integer NOT NULL,
+    nin_number character varying(11) NOT NULL,
+    individual_id integer,
+    enrollment_date date NOT NULL,
+    enrollment_center character varying(100) NOT NULL,
+    enrollment_state character varying(50),
+    demographic_data jsonb,
+    biometric_data_hash character varying(500),
+    verification_status character varying(20) DEFAULT 'Pending'::character varying,
+    verification_date date,
+    tier_level integer,
+    last_synchronized timestamp without time zone,
+    is_active boolean DEFAULT true,
+    created_at timestamp without time zone DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT nin_registry_tier_level_check CHECK (((tier_level >= 1) AND (tier_level <= 3))),
+    CONSTRAINT nin_registry_verification_status_check CHECK (((verification_status)::text = ANY ((ARRAY['Pending'::character varying, 'Verified'::character varying, 'Failed'::character varying, 'Suspended'::character varying])::text[])))
+);
+
+
+ALTER TABLE public.nin_registry OWNER TO postgres;
+
+--
+-- Name: nin_registry_nin_id_seq; Type: SEQUENCE; Schema: public; Owner: postgres
+--
+
+CREATE SEQUENCE public.nin_registry_nin_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER SEQUENCE public.nin_registry_nin_id_seq OWNER TO postgres;
+
+--
+-- Name: nin_registry_nin_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: postgres
+--
+
+ALTER SEQUENCE public.nin_registry_nin_id_seq OWNED BY public.nin_registry.nin_id;
+
+
+--
+-- Name: pepdeclaration; Type: TABLE; Schema: public; Owner: postgres
+--
+
+CREATE TABLE public.pepdeclaration (
+    pep_id integer NOT NULL,
+    individual_id integer,
+    is_pep boolean NOT NULL,
+    pep_type character varying(50),
+    position_held character varying(200),
+    country_of_position character varying(100),
+    from_date date,
+    to_date date,
+    immediate_family_pep boolean DEFAULT false,
+    close_associate_pep boolean DEFAULT false,
+    relationship_type character varying(100),
+    source_of_wealth text,
+    declaration_date date,
+    verified boolean DEFAULT false,
+    verification_method character varying(50),
+    verification_date date,
+    risk_assessment character varying(20),
+    ongoing_monitoring_required boolean DEFAULT true,
+    monitoring_frequency character varying(20),
+    created_at timestamp without time zone DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT pepdeclaration_pep_type_check CHECK (((pep_type)::text = ANY ((ARRAY['Domestic'::character varying, 'Foreign'::character varying, 'International_Organization'::character varying])::text[]))),
+    CONSTRAINT pepdeclaration_risk_assessment_check CHECK (((risk_assessment)::text = ANY ((ARRAY['Low'::character varying, 'Medium'::character varying, 'High'::character varying])::text[])))
+);
+
+
+ALTER TABLE public.pepdeclaration OWNER TO postgres;
+
+--
+-- Name: pepdeclaration_pep_id_seq; Type: SEQUENCE; Schema: public; Owner: postgres
+--
+
+CREATE SEQUENCE public.pepdeclaration_pep_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER SEQUENCE public.pepdeclaration_pep_id_seq OWNER TO postgres;
+
+--
+-- Name: pepdeclaration_pep_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: postgres
+--
+
+ALTER SEQUENCE public.pepdeclaration_pep_id_seq OWNED BY public.pepdeclaration.pep_id;
+
+
+--
+-- Name: riskassessment; Type: TABLE; Schema: public; Owner: postgres
+--
+
+CREATE TABLE public.riskassessment (
+    assessment_id integer NOT NULL,
+    applicant_type character varying(20),
+    applicant_id integer,
+    assessment_date date NOT NULL,
+    assessed_by integer,
+    risk_factors jsonb,
+    total_score integer,
+    risk_rating character varying(20),
+    justification text,
+    mitigation_measures jsonb,
+    review_date date,
+    assessment_validity_months integer DEFAULT 12,
+    next_assessment_date date,
+    created_at timestamp without time zone DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT riskassessment_risk_rating_check CHECK (((risk_rating)::text = ANY ((ARRAY['Low'::character varying, 'Medium_Low'::character varying, 'Medium'::character varying, 'Medium_High'::character varying, 'High'::character varying])::text[]))),
+    CONSTRAINT riskassessment_total_score_check CHECK (((total_score >= 0) AND (total_score <= 100)))
+);
+
+
+ALTER TABLE public.riskassessment OWNER TO postgres;
+
+--
+-- Name: riskassessment_assessment_id_seq; Type: SEQUENCE; Schema: public; Owner: postgres
+--
+
+CREATE SEQUENCE public.riskassessment_assessment_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER SEQUENCE public.riskassessment_assessment_id_seq OWNER TO postgres;
+
+--
+-- Name: riskassessment_assessment_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: postgres
+--
+
+ALTER SEQUENCE public.riskassessment_assessment_id_seq OWNED BY public.riskassessment.assessment_id;
+
+
+--
+-- Name: suspiciousactivityreport; Type: TABLE; Schema: public; Owner: postgres
+--
+
+CREATE TABLE public.suspiciousactivityreport (
+    sar_id integer NOT NULL,
+    reference_number character varying(50),
+    reporting_institution character varying(100),
+    report_type character varying(50),
+    report_date date NOT NULL,
+    subject_type character varying(20),
+    subject_id integer,
+    activity_description text NOT NULL,
+    suspicious_indicators jsonb,
+    amount_involved numeric(15,2),
+    transaction_dates jsonb,
+    involved_parties jsonb,
+    supporting_documents jsonb,
+    internal_case_number character varying(50),
+    filed_with_authorities boolean DEFAULT false,
+    authority_name character varying(100),
+    filing_date date,
+    filing_reference character varying(100),
+    confidentiality_level character varying(20),
+    retention_period_years integer DEFAULT 7,
+    created_by integer,
+    created_at timestamp without time zone DEFAULT CURRENT_TIMESTAMP,
+    updated_at timestamp without time zone DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT suspiciousactivityreport_confidentiality_level_check CHECK (((confidentiality_level)::text = ANY ((ARRAY['High'::character varying, 'Medium'::character varying, 'Low'::character varying])::text[]))),
+    CONSTRAINT suspiciousactivityreport_report_type_check CHECK (((report_type)::text = ANY ((ARRAY['SAR'::character varying, 'STR'::character varying, 'CTR'::character varying])::text[]))),
+    CONSTRAINT suspiciousactivityreport_subject_type_check CHECK (((subject_type)::text = ANY ((ARRAY['Individual'::character varying, 'Corporate'::character varying, 'Transaction'::character varying])::text[])))
+);
+
+
+ALTER TABLE public.suspiciousactivityreport OWNER TO postgres;
+
+--
+-- Name: suspiciousactivityreport_sar_id_seq; Type: SEQUENCE; Schema: public; Owner: postgres
+--
+
+CREATE SEQUENCE public.suspiciousactivityreport_sar_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER SEQUENCE public.suspiciousactivityreport_sar_id_seq OWNER TO postgres;
+
+--
+-- Name: suspiciousactivityreport_sar_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: postgres
+--
+
+ALTER SEQUENCE public.suspiciousactivityreport_sar_id_seq OWNED BY public.suspiciousactivityreport.sar_id;
+
+
+--
+-- Name: transactionmonitoring; Type: TABLE; Schema: public; Owner: postgres
+--
+
+CREATE TABLE public.transactionmonitoring (
+    monitor_id integer NOT NULL,
+    investor_type character varying(20),
+    investor_id integer,
+    transaction_type character varying(50),
+    transaction_amount numeric(15,2),
+    transaction_date date,
+    counterparty_name character varying(200),
+    counterparty_country character varying(100),
+    payment_method character varying(50),
+    transaction_pattern character varying(50),
+    risk_score integer,
+    alert_generated boolean DEFAULT false,
+    alert_type character varying(50),
+    alert_severity character varying(20),
+    investigation_status character varying(20),
+    investigator_id integer,
+    investigation_notes text,
+    created_at timestamp without time zone DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT transactionmonitoring_investigation_status_check CHECK (((investigation_status)::text = ANY ((ARRAY['Open'::character varying, 'Under Review'::character varying, 'Closed'::character varying, 'SAR_Filed'::character varying])::text[])))
+);
+
+
+ALTER TABLE public.transactionmonitoring OWNER TO postgres;
+
+--
+-- Name: transactionmonitoring_monitor_id_seq; Type: SEQUENCE; Schema: public; Owner: postgres
+--
+
+CREATE SEQUENCE public.transactionmonitoring_monitor_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER SEQUENCE public.transactionmonitoring_monitor_id_seq OWNER TO postgres;
+
+--
+-- Name: transactionmonitoring_monitor_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: postgres
+--
+
+ALTER SEQUENCE public.transactionmonitoring_monitor_id_seq OWNED BY public.transactionmonitoring.monitor_id;
+
+
+--
+-- Name: amlscreening screening_id; Type: DEFAULT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.amlscreening ALTER COLUMN screening_id SET DEFAULT nextval('public.amlscreening_screening_id_seq'::regclass);
+
+
+--
+-- Name: applicationaudit audit_id; Type: DEFAULT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.applicationaudit ALTER COLUMN audit_id SET DEFAULT nextval('public.applicationaudit_audit_id_seq'::regclass);
+
+
+--
+-- Name: applicationbankdetail bank_detail_id; Type: DEFAULT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.applicationbankdetail ALTER COLUMN bank_detail_id SET DEFAULT nextval('public.applicationbankdetail_bank_detail_id_seq'::regclass);
+
+
+--
+-- Name: applicationdocument document_id; Type: DEFAULT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.applicationdocument ALTER COLUMN document_id SET DEFAULT nextval('public.applicationdocument_document_id_seq'::regclass);
+
+
+--
+-- Name: applicationnote note_id; Type: DEFAULT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.applicationnote ALTER COLUMN note_id SET DEFAULT nextval('public.applicationnote_note_id_seq'::regclass);
+
+
+--
+-- Name: applicationvalidationrule rule_id; Type: DEFAULT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.applicationvalidationrule ALTER COLUMN rule_id SET DEFAULT nextval('public.applicationvalidationrule_rule_id_seq'::regclass);
+
+
+--
+-- Name: applicationwitness witness_id; Type: DEFAULT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.applicationwitness ALTER COLUMN witness_id SET DEFAULT nextval('public.applicationwitness_witness_id_seq'::regclass);
+
+
+--
+-- Name: auction auction_id; Type: DEFAULT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.auction ALTER COLUMN auction_id SET DEFAULT nextval('public.auction_auction_id_seq'::regclass);
+
+
+--
+-- Name: auctionresult result_id; Type: DEFAULT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.auctionresult ALTER COLUMN result_id SET DEFAULT nextval('public.auctionresult_result_id_seq'::regclass);
+
+
+--
+-- Name: bond bond_id; Type: DEFAULT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.bond ALTER COLUMN bond_id SET DEFAULT nextval('public.bond_bond_id_seq'::regclass);
+
+
+--
+-- Name: bondsubscription application_id; Type: DEFAULT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.bondsubscription ALTER COLUMN application_id SET DEFAULT nextval('public.bondsubscription_application_id_seq'::regclass);
+
+
+--
+-- Name: bvn_registry bvn_id; Type: DEFAULT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.bvn_registry ALTER COLUMN bvn_id SET DEFAULT nextval('public.bvn_registry_bvn_id_seq'::regclass);
+
+
+--
+-- Name: complianceaction action_id; Type: DEFAULT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.complianceaction ALTER COLUMN action_id SET DEFAULT nextval('public.complianceaction_action_id_seq'::regclass);
+
+
+--
+-- Name: corporateapplicant corporate_id; Type: DEFAULT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.corporateapplicant ALTER COLUMN corporate_id SET DEFAULT nextval('public.corporateapplicant_corporate_id_seq'::regclass);
+
+
+--
+-- Name: customerduediligence cdd_id; Type: DEFAULT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.customerduediligence ALTER COLUMN cdd_id SET DEFAULT nextval('public.customerduediligence_cdd_id_seq'::regclass);
+
+
+--
+-- Name: diasporainvestor diaspora_id; Type: DEFAULT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.diasporainvestor ALTER COLUMN diaspora_id SET DEFAULT nextval('public.diasporainvestor_diaspora_id_seq'::regclass);
+
+
+--
+-- Name: distributionagent agent_id; Type: DEFAULT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.distributionagent ALTER COLUMN agent_id SET DEFAULT nextval('public.distributionagent_agent_id_seq'::regclass);
+
+
+--
+-- Name: foreigninvestor foreign_investor_id; Type: DEFAULT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.foreigninvestor ALTER COLUMN foreign_investor_id SET DEFAULT nextval('public.foreigninvestor_foreign_investor_id_seq'::regclass);
+
+
+--
+-- Name: foreigninvestordocument document_id; Type: DEFAULT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.foreigninvestordocument ALTER COLUMN document_id SET DEFAULT nextval('public.foreigninvestordocument_document_id_seq'::regclass);
+
+
+--
+-- Name: identitylinkage linkage_id; Type: DEFAULT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.identitylinkage ALTER COLUMN linkage_id SET DEFAULT nextval('public.identitylinkage_linkage_id_seq'::regclass);
+
+
+--
+-- Name: individualapplicant individual_id; Type: DEFAULT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.individualapplicant ALTER COLUMN individual_id SET DEFAULT nextval('public.individualapplicant_individual_id_seq'::regclass);
+
+
+--
+-- Name: nin_registry nin_id; Type: DEFAULT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.nin_registry ALTER COLUMN nin_id SET DEFAULT nextval('public.nin_registry_nin_id_seq'::regclass);
+
+
+--
+-- Name: pepdeclaration pep_id; Type: DEFAULT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.pepdeclaration ALTER COLUMN pep_id SET DEFAULT nextval('public.pepdeclaration_pep_id_seq'::regclass);
+
+
+--
+-- Name: riskassessment assessment_id; Type: DEFAULT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.riskassessment ALTER COLUMN assessment_id SET DEFAULT nextval('public.riskassessment_assessment_id_seq'::regclass);
+
+
+--
+-- Name: suspiciousactivityreport sar_id; Type: DEFAULT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.suspiciousactivityreport ALTER COLUMN sar_id SET DEFAULT nextval('public.suspiciousactivityreport_sar_id_seq'::regclass);
+
+
+--
+-- Name: transactionmonitoring monitor_id; Type: DEFAULT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.transactionmonitoring ALTER COLUMN monitor_id SET DEFAULT nextval('public.transactionmonitoring_monitor_id_seq'::regclass);
+
+
+--
+-- Data for Name: amlscreening; Type: TABLE DATA; Schema: public; Owner: postgres
+--
+
+COPY public.amlscreening (screening_id, individual_id, corporate_id, foreign_investor_id, screening_type, screening_date, screening_system, match_found, match_details, risk_score, risk_level, review_required, reviewed_by, review_date, review_decision, review_notes, next_screening_date, created_at) FROM stdin;
+\.
+
+
+--
+-- Data for Name: applicationaudit; Type: TABLE DATA; Schema: public; Owner: postgres
+--
+
+COPY public.applicationaudit (audit_id, application_id, action, action_by, action_timestamp, old_values, new_values, ip_address, user_agent) FROM stdin;
+\.
+
+
+--
+-- Data for Name: applicationbankdetail; Type: TABLE DATA; Schema: public; Owner: postgres
+--
+
+COPY public.applicationbankdetail (bank_detail_id, application_id, applicant_type, individual_id, corporate_id, bank_name, account_number, account_name, bvn, is_primary_account, purpose, created_at) FROM stdin;
+1	1	Individual	1	\N	First Bank of Nigeria	1234567890	\N	12345678901	t	Interest Payment	2026-02-02 19:21:34.534802
+\.
+
+
+--
+-- Data for Name: applicationdocument; Type: TABLE DATA; Schema: public; Owner: postgres
+--
+
+COPY public.applicationdocument (document_id, application_id, document_type, document_name, document_path, document_format, upload_date, verified, verified_by, verified_date) FROM stdin;
+\.
+
+
+--
+-- Data for Name: applicationnote; Type: TABLE DATA; Schema: public; Owner: postgres
+--
+
+COPY public.applicationnote (note_id, application_id, note_type, note_text, created_by, created_at, is_resolved) FROM stdin;
+\.
+
+
+--
+-- Data for Name: applicationvalidationrule; Type: TABLE DATA; Schema: public; Owner: postgres
+--
+
+COPY public.applicationvalidationrule (rule_id, rule_name, rule_description, rule_type, rule_condition, error_message, is_active, created_at) FROM stdin;
+\.
+
+
+--
+-- Data for Name: applicationwitness; Type: TABLE DATA; Schema: public; Owner: postgres
+--
+
+COPY public.applicationwitness (witness_id, application_id, individual_id, witness_type, witness_name, witness_employee_id, witness_agency, explanation_provided, language_used, witness_signature_path, witness_date, created_at) FROM stdin;
+1	1	1	Agent	Emeka Nwankwo	\N	First Securities Ltd	t	Yoruba	\N	2026-02-02	2026-02-02 19:22:04.491836
+\.
+
+
+--
+-- Data for Name: auction; Type: TABLE DATA; Schema: public; Owner: postgres
+--
+
+COPY public.auction (auction_id, bond_id, auction_date, settlement_date, amount_offered, term_to_maturity, created_at) FROM stdin;
+1	1	2026-01-26	2026-01-28	300.00	5 Years, 1 Month	2026-02-02 18:52:20.228098
+2	2	2026-01-26	2026-01-28	400.00	8 Years, 1 Month	2026-02-02 18:52:20.228098
+3	3	2026-01-26	2026-01-28	200.00	9 Years	2026-02-02 18:52:20.228098
+\.
+
+
+--
+-- Data for Name: auctionresult; Type: TABLE DATA; Schema: public; Owner: postgres
+--
+
+COPY public.auctionresult (result_id, auction_id, total_bids, successful_bids, subscription_amount, amount_allotted, non_competitive_allotment, bid_range_min, bid_range_max, marginal_rate, original_coupon_maintained, created_at) FROM stdin;
+1	1	124	88	514.45	398.19	17.50	15.85	18.50	17.62	t	2026-02-02 18:52:20.228098
+2	2	256	144	1006.86	576.33	113.22	16.00	19.40	17.50	t	2026-02-02 18:52:20.228098
+3	3	335	176	731.40	570.16	\N	16.00	25.90	17.52	t	2026-02-02 18:52:20.228098
+\.
+
+
+--
+-- Data for Name: bond; Type: TABLE DATA; Schema: public; Owner: postgres
+--
+
+COPY public.bond (bond_id, bond_name, original_coupon_rate, maturity_date, tenor_years, created_at, updated_at) FROM stdin;
+1	18.50% FGN FEB 2031	18.50	2031-02-21	7	2026-02-02 18:52:20.228098	2026-02-02 18:52:20.228098
+2	19.00% FGN FEB 2034	19.00	2034-02-21	10	2026-02-02 18:52:20.228098	2026-02-02 18:52:20.228098
+3	22.60% FGN JAN 2035	22.60	2035-01-29	10	2026-02-02 18:52:20.228098	2026-02-02 18:52:20.228098
+\.
+
+
+--
+-- Data for Name: bondsubscription; Type: TABLE DATA; Schema: public; Owner: postgres
+--
+
+COPY public.bondsubscription (application_id, application_number, application_date, application_type, bond_id, auction_id, amount_applied, payment_reference, payment_date, distribution_agent_id, status, created_at, updated_at) FROM stdin;
+1	APP-20260202-100001	2026-02-02	Individual	1	1	50000.00	\N	\N	1	Approved	2026-02-02 19:21:34.534802	2026-02-02 19:21:34.534802
+2	APP-20260202-100002	2026-02-02	Corporate	\N	\N	1500000.00	\N	\N	2	Under Review	2026-02-02 19:21:34.534802	2026-02-02 19:21:34.534802
+\.
+
+
+--
+-- Data for Name: bvn_registry; Type: TABLE DATA; Schema: public; Owner: postgres
+--
+
+COPY public.bvn_registry (bvn_id, bvn_number, individual_id, enrollment_date, enrollment_bank, enrollment_location, biometric_data_hash, verification_status, verification_date, verification_method, last_updated, linked_accounts_count, is_active, remarks) FROM stdin;
+\.
+
+
+--
+-- Data for Name: complianceaction; Type: TABLE DATA; Schema: public; Owner: postgres
+--
+
+COPY public.complianceaction (action_id, case_id, action_type, action_date, action_by, description, deadline, status, outcome, follow_up_required, follow_up_date, created_at) FROM stdin;
+\.
+
+
+--
+-- Data for Name: corporateapplicant; Type: TABLE DATA; Schema: public; Owner: postgres
+--
+
+COPY public.corporateapplicant (corporate_id, application_id, company_name, business_type, rc_number, incorporation_date, corporate_address, contact_person_name, contact_person_position, contact_phone_number, contact_email, contact_passport_number, authorized_signatory_name, authorized_signature_path, corporate_seal_used, bank_name, bank_account_number, bvn, investor_category, created_at) FROM stdin;
+1	2	GreenTech Solutions Ltd	Technology Consulting	RC: 987654	\N	45A Adeola Odeku Street, Victoria Island, Lagos	Mrs. Amina Yusuf	\N	+2348023456789	amina@greentech.com	\N	\N	\N	f	Guaranty Trust Bank	9876543210	\N	Other Corporate	2026-02-02 19:21:34.534802
+\.
+
+
+--
+-- Data for Name: customerduediligence; Type: TABLE DATA; Schema: public; Owner: postgres
+--
+
+COPY public.customerduediligence (cdd_id, applicant_type, applicant_id, cdd_level, risk_category, documents_verified, verification_date, verified_by, source_of_funds_verified, source_of_wealth_verified, beneficial_owners_verified, ongoing_monitoring, next_review_date, review_frequency, notes, created_at, updated_at) FROM stdin;
+\.
+
+
+--
+-- Data for Name: diasporainvestor; Type: TABLE DATA; Schema: public; Owner: postgres
+--
+
+COPY public.diasporainvestor (diaspora_id, foreign_investor_id, nigerian_origin, has_nigerian_bvn, bvn_number, has_nigerian_nin, nin_number, state_of_origin, local_government_area, hometown, nigerian_contact_address, nigerian_contact_person, nigerian_contact_phone, dual_citizenship, dual_citizenship_country, nigerian_bank_account_exists, nigerian_bank_name, nigerian_account_number, remittance_frequency, annual_remittance_amount, diaspora_association_member, association_name, investment_motivation, created_at) FROM stdin;
+\.
+
+
+--
+-- Data for Name: distributionagent; Type: TABLE DATA; Schema: public; Owner: postgres
+--
+
+COPY public.distributionagent (agent_id, agent_name, agent_type, contact_person, phone_number, email, address, is_active, created_at) FROM stdin;
+1	First Securities Ltd	Stockbroker	John Adebayo	+2348012345678	info@firstsecurities.com	123 Broad Street, Lagos	t	2026-02-02 19:21:34.534802
+2	Union Capital Partners	Stockbroker	Chioma Okonkwo	+2348023456789	contact@unioncapital.com	45 Marina Road, Lagos	t	2026-02-02 19:21:34.534802
+3	Heritage Investment Bank	Bank	Mohammed Bello	+2348034567890	heritage@investmentbank.com	22 Central Business District, Abuja	t	2026-02-02 19:21:34.534802
+\.
+
+
+--
+-- Data for Name: foreigninvestor; Type: TABLE DATA; Schema: public; Owner: postgres
+--
+
+COPY public.foreigninvestor (foreign_investor_id, application_id, investor_type, country_of_origin, country_of_residence, nationality, tax_residency_country, tax_identification_number, passport_number, passport_expiry_date, visa_type, visa_expiry_date, foreign_address, foreign_phone, foreign_email, foreign_bank_name, foreign_bank_account, iban_number, swift_code, intermediary_bank, source_of_funds, investment_purpose, regulatory_status, sanctions_check, sanctions_check_date, created_at, updated_at) FROM stdin;
+\.
+
+
+--
+-- Data for Name: foreigninvestordocument; Type: TABLE DATA; Schema: public; Owner: postgres
+--
+
+COPY public.foreigninvestordocument (document_id, foreign_investor_id, document_type, document_name, document_number, issuing_country, issue_date, expiry_date, document_path, verified, verified_by, verification_date, verification_notes, created_at) FROM stdin;
+\.
+
+
+--
+-- Data for Name: identitylinkage; Type: TABLE DATA; Schema: public; Owner: postgres
+--
+
+COPY public.identitylinkage (linkage_id, individual_id, bvn_number, nin_number, passport_number, drivers_license_number, voter_card_number, match_score, match_status, match_date, verification_agent, confidence_level, created_at) FROM stdin;
+\.
+
+
+--
+-- Data for Name: individualapplicant; Type: TABLE DATA; Schema: public; Owner: postgres
+--
+
+COPY public.individualapplicant (individual_id, application_id, applicant_order, title, surname, first_name, other_names, occupation, phone_number, email, date_of_birth, passport_number, mother_maiden_name, next_of_kin_name, next_of_kin_relationship, next_of_kin_phone, residential_address, residency_classification, bank_name, bank_account_number, bvn, signature_image_path, is_primary_applicant, literacy_status, witness_name, witness_employee_id, created_at) FROM stdin;
+1	1	1	Mr	Adeyemi	Oluwaseun	\N	Software Engineer	+2347012345678	oluwaseun@email.com	1985-06-15	A12345678	Johnson	Mrs. Funmilayo Adeyemi	\N	\N	12 Victoria Island, Lagos	Resident	First Bank of Nigeria	1234567890	12345678901	\N	t	Illiterate	\N	\N	2026-02-02 19:21:34.534802
+\.
+
+
+--
+-- Data for Name: nin_registry; Type: TABLE DATA; Schema: public; Owner: postgres
+--
+
+COPY public.nin_registry (nin_id, nin_number, individual_id, enrollment_date, enrollment_center, enrollment_state, demographic_data, biometric_data_hash, verification_status, verification_date, tier_level, last_synchronized, is_active, created_at) FROM stdin;
+\.
+
+
+--
+-- Data for Name: pepdeclaration; Type: TABLE DATA; Schema: public; Owner: postgres
+--
+
+COPY public.pepdeclaration (pep_id, individual_id, is_pep, pep_type, position_held, country_of_position, from_date, to_date, immediate_family_pep, close_associate_pep, relationship_type, source_of_wealth, declaration_date, verified, verification_method, verification_date, risk_assessment, ongoing_monitoring_required, monitoring_frequency, created_at) FROM stdin;
+\.
+
+
+--
+-- Data for Name: riskassessment; Type: TABLE DATA; Schema: public; Owner: postgres
+--
+
+COPY public.riskassessment (assessment_id, applicant_type, applicant_id, assessment_date, assessed_by, risk_factors, total_score, risk_rating, justification, mitigation_measures, review_date, assessment_validity_months, next_assessment_date, created_at) FROM stdin;
+\.
+
+
+--
+-- Data for Name: suspiciousactivityreport; Type: TABLE DATA; Schema: public; Owner: postgres
+--
+
+COPY public.suspiciousactivityreport (sar_id, reference_number, reporting_institution, report_type, report_date, subject_type, subject_id, activity_description, suspicious_indicators, amount_involved, transaction_dates, involved_parties, supporting_documents, internal_case_number, filed_with_authorities, authority_name, filing_date, filing_reference, confidentiality_level, retention_period_years, created_by, created_at, updated_at) FROM stdin;
+\.
+
+
+--
+-- Data for Name: transactionmonitoring; Type: TABLE DATA; Schema: public; Owner: postgres
+--
+
+COPY public.transactionmonitoring (monitor_id, investor_type, investor_id, transaction_type, transaction_amount, transaction_date, counterparty_name, counterparty_country, payment_method, transaction_pattern, risk_score, alert_generated, alert_type, alert_severity, investigation_status, investigator_id, investigation_notes, created_at) FROM stdin;
+\.
+
+
+--
+-- Name: amlscreening_screening_id_seq; Type: SEQUENCE SET; Schema: public; Owner: postgres
+--
+
+SELECT pg_catalog.setval('public.amlscreening_screening_id_seq', 1, false);
+
+
+--
+-- Name: application_number_seq; Type: SEQUENCE SET; Schema: public; Owner: postgres
+--
+
+SELECT pg_catalog.setval('public.application_number_seq', 100002, true);
+
+
+--
+-- Name: applicationaudit_audit_id_seq; Type: SEQUENCE SET; Schema: public; Owner: postgres
+--
+
+SELECT pg_catalog.setval('public.applicationaudit_audit_id_seq', 1, false);
+
+
+--
+-- Name: applicationbankdetail_bank_detail_id_seq; Type: SEQUENCE SET; Schema: public; Owner: postgres
+--
+
+SELECT pg_catalog.setval('public.applicationbankdetail_bank_detail_id_seq', 1, true);
+
+
+--
+-- Name: applicationdocument_document_id_seq; Type: SEQUENCE SET; Schema: public; Owner: postgres
+--
+
+SELECT pg_catalog.setval('public.applicationdocument_document_id_seq', 1, true);
+
+
+--
+-- Name: applicationnote_note_id_seq; Type: SEQUENCE SET; Schema: public; Owner: postgres
+--
+
+SELECT pg_catalog.setval('public.applicationnote_note_id_seq', 1, false);
+
+
+--
+-- Name: applicationvalidationrule_rule_id_seq; Type: SEQUENCE SET; Schema: public; Owner: postgres
+--
+
+SELECT pg_catalog.setval('public.applicationvalidationrule_rule_id_seq', 1, false);
+
+
+--
+-- Name: applicationwitness_witness_id_seq; Type: SEQUENCE SET; Schema: public; Owner: postgres
+--
+
+SELECT pg_catalog.setval('public.applicationwitness_witness_id_seq', 1, true);
+
+
+--
+-- Name: auction_auction_id_seq; Type: SEQUENCE SET; Schema: public; Owner: postgres
+--
+
+SELECT pg_catalog.setval('public.auction_auction_id_seq', 3, true);
+
+
+--
+-- Name: auctionresult_result_id_seq; Type: SEQUENCE SET; Schema: public; Owner: postgres
+--
+
+SELECT pg_catalog.setval('public.auctionresult_result_id_seq', 3, true);
+
+
+--
+-- Name: bond_bond_id_seq; Type: SEQUENCE SET; Schema: public; Owner: postgres
+--
+
+SELECT pg_catalog.setval('public.bond_bond_id_seq', 3, true);
+
+
+--
+-- Name: bondsubscription_application_id_seq; Type: SEQUENCE SET; Schema: public; Owner: postgres
+--
+
+SELECT pg_catalog.setval('public.bondsubscription_application_id_seq', 2, true);
+
+
+--
+-- Name: bvn_registry_bvn_id_seq; Type: SEQUENCE SET; Schema: public; Owner: postgres
+--
+
+SELECT pg_catalog.setval('public.bvn_registry_bvn_id_seq', 3, true);
+
+
+--
+-- Name: complianceaction_action_id_seq; Type: SEQUENCE SET; Schema: public; Owner: postgres
+--
+
+SELECT pg_catalog.setval('public.complianceaction_action_id_seq', 1, false);
+
+
+--
+-- Name: corporateapplicant_corporate_id_seq; Type: SEQUENCE SET; Schema: public; Owner: postgres
+--
+
+SELECT pg_catalog.setval('public.corporateapplicant_corporate_id_seq', 1, true);
+
+
+--
+-- Name: customerduediligence_cdd_id_seq; Type: SEQUENCE SET; Schema: public; Owner: postgres
+--
+
+SELECT pg_catalog.setval('public.customerduediligence_cdd_id_seq', 1, false);
+
+
+--
+-- Name: diasporainvestor_diaspora_id_seq; Type: SEQUENCE SET; Schema: public; Owner: postgres
+--
+
+SELECT pg_catalog.setval('public.diasporainvestor_diaspora_id_seq', 1, false);
+
+
+--
+-- Name: distributionagent_agent_id_seq; Type: SEQUENCE SET; Schema: public; Owner: postgres
+--
+
+SELECT pg_catalog.setval('public.distributionagent_agent_id_seq', 3, true);
+
+
+--
+-- Name: foreigninvestor_foreign_investor_id_seq; Type: SEQUENCE SET; Schema: public; Owner: postgres
+--
+
+SELECT pg_catalog.setval('public.foreigninvestor_foreign_investor_id_seq', 1, false);
+
+
+--
+-- Name: foreigninvestordocument_document_id_seq; Type: SEQUENCE SET; Schema: public; Owner: postgres
+--
+
+SELECT pg_catalog.setval('public.foreigninvestordocument_document_id_seq', 1, false);
+
+
+--
+-- Name: identitylinkage_linkage_id_seq; Type: SEQUENCE SET; Schema: public; Owner: postgres
+--
+
+SELECT pg_catalog.setval('public.identitylinkage_linkage_id_seq', 1, false);
+
+
+--
+-- Name: individualapplicant_individual_id_seq; Type: SEQUENCE SET; Schema: public; Owner: postgres
+--
+
+SELECT pg_catalog.setval('public.individualapplicant_individual_id_seq', 3, true);
+
+
+--
+-- Name: nin_registry_nin_id_seq; Type: SEQUENCE SET; Schema: public; Owner: postgres
+--
+
+SELECT pg_catalog.setval('public.nin_registry_nin_id_seq', 1, false);
+
+
+--
+-- Name: pepdeclaration_pep_id_seq; Type: SEQUENCE SET; Schema: public; Owner: postgres
+--
+
+SELECT pg_catalog.setval('public.pepdeclaration_pep_id_seq', 1, false);
+
+
+--
+-- Name: riskassessment_assessment_id_seq; Type: SEQUENCE SET; Schema: public; Owner: postgres
+--
+
+SELECT pg_catalog.setval('public.riskassessment_assessment_id_seq', 1, false);
+
+
+--
+-- Name: suspiciousactivityreport_sar_id_seq; Type: SEQUENCE SET; Schema: public; Owner: postgres
+--
+
+SELECT pg_catalog.setval('public.suspiciousactivityreport_sar_id_seq', 1, false);
+
+
+--
+-- Name: transactionmonitoring_monitor_id_seq; Type: SEQUENCE SET; Schema: public; Owner: postgres
+--
+
+SELECT pg_catalog.setval('public.transactionmonitoring_monitor_id_seq', 1, false);
+
+
+--
+-- Name: amlscreening amlscreening_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.amlscreening
+    ADD CONSTRAINT amlscreening_pkey PRIMARY KEY (screening_id);
+
+
+--
+-- Name: applicationaudit applicationaudit_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.applicationaudit
+    ADD CONSTRAINT applicationaudit_pkey PRIMARY KEY (audit_id);
+
+
+--
+-- Name: applicationbankdetail applicationbankdetail_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.applicationbankdetail
+    ADD CONSTRAINT applicationbankdetail_pkey PRIMARY KEY (bank_detail_id);
+
+
+--
+-- Name: applicationdocument applicationdocument_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.applicationdocument
+    ADD CONSTRAINT applicationdocument_pkey PRIMARY KEY (document_id);
+
+
+--
+-- Name: applicationnote applicationnote_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.applicationnote
+    ADD CONSTRAINT applicationnote_pkey PRIMARY KEY (note_id);
+
+
+--
+-- Name: applicationvalidationrule applicationvalidationrule_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.applicationvalidationrule
+    ADD CONSTRAINT applicationvalidationrule_pkey PRIMARY KEY (rule_id);
+
+
+--
+-- Name: applicationwitness applicationwitness_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.applicationwitness
+    ADD CONSTRAINT applicationwitness_pkey PRIMARY KEY (witness_id);
+
+
+--
+-- Name: auction auction_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.auction
+    ADD CONSTRAINT auction_pkey PRIMARY KEY (auction_id);
+
+
+--
+-- Name: auctionresult auctionresult_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.auctionresult
+    ADD CONSTRAINT auctionresult_pkey PRIMARY KEY (result_id);
+
+
+--
+-- Name: bond bond_bond_name_key; Type: CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.bond
+    ADD CONSTRAINT bond_bond_name_key UNIQUE (bond_name);
+
+
+--
+-- Name: bond bond_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.bond
+    ADD CONSTRAINT bond_pkey PRIMARY KEY (bond_id);
+
+
+--
+-- Name: bondsubscription bondsubscription_application_number_key; Type: CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.bondsubscription
+    ADD CONSTRAINT bondsubscription_application_number_key UNIQUE (application_number);
+
+
+--
+-- Name: bondsubscription bondsubscription_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.bondsubscription
+    ADD CONSTRAINT bondsubscription_pkey PRIMARY KEY (application_id);
+
+
+--
+-- Name: bvn_registry bvn_registry_bvn_number_key; Type: CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.bvn_registry
+    ADD CONSTRAINT bvn_registry_bvn_number_key UNIQUE (bvn_number);
+
+
+--
+-- Name: bvn_registry bvn_registry_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.bvn_registry
+    ADD CONSTRAINT bvn_registry_pkey PRIMARY KEY (bvn_id);
+
+
+--
+-- Name: complianceaction complianceaction_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.complianceaction
+    ADD CONSTRAINT complianceaction_pkey PRIMARY KEY (action_id);
+
+
+--
+-- Name: corporateapplicant corporateapplicant_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.corporateapplicant
+    ADD CONSTRAINT corporateapplicant_pkey PRIMARY KEY (corporate_id);
+
+
+--
+-- Name: customerduediligence customerduediligence_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.customerduediligence
+    ADD CONSTRAINT customerduediligence_pkey PRIMARY KEY (cdd_id);
+
+
+--
+-- Name: diasporainvestor diasporainvestor_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.diasporainvestor
+    ADD CONSTRAINT diasporainvestor_pkey PRIMARY KEY (diaspora_id);
+
+
+--
+-- Name: distributionagent distributionagent_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.distributionagent
+    ADD CONSTRAINT distributionagent_pkey PRIMARY KEY (agent_id);
+
+
+--
+-- Name: foreigninvestor foreigninvestor_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.foreigninvestor
+    ADD CONSTRAINT foreigninvestor_pkey PRIMARY KEY (foreign_investor_id);
+
+
+--
+-- Name: foreigninvestordocument foreigninvestordocument_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.foreigninvestordocument
+    ADD CONSTRAINT foreigninvestordocument_pkey PRIMARY KEY (document_id);
+
+
+--
+-- Name: identitylinkage identitylinkage_individual_id_bvn_number_nin_number_key; Type: CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.identitylinkage
+    ADD CONSTRAINT identitylinkage_individual_id_bvn_number_nin_number_key UNIQUE (individual_id, bvn_number, nin_number);
+
+
+--
+-- Name: identitylinkage identitylinkage_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.identitylinkage
+    ADD CONSTRAINT identitylinkage_pkey PRIMARY KEY (linkage_id);
+
+
+--
+-- Name: individualapplicant individualapplicant_bvn_key; Type: CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.individualapplicant
+    ADD CONSTRAINT individualapplicant_bvn_key UNIQUE (bvn);
+
+
+--
+-- Name: individualapplicant individualapplicant_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.individualapplicant
+    ADD CONSTRAINT individualapplicant_pkey PRIMARY KEY (individual_id);
+
+
+--
+-- Name: nin_registry nin_registry_nin_number_key; Type: CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.nin_registry
+    ADD CONSTRAINT nin_registry_nin_number_key UNIQUE (nin_number);
+
+
+--
+-- Name: nin_registry nin_registry_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.nin_registry
+    ADD CONSTRAINT nin_registry_pkey PRIMARY KEY (nin_id);
+
+
+--
+-- Name: pepdeclaration pepdeclaration_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.pepdeclaration
+    ADD CONSTRAINT pepdeclaration_pkey PRIMARY KEY (pep_id);
+
+
+--
+-- Name: riskassessment riskassessment_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.riskassessment
+    ADD CONSTRAINT riskassessment_pkey PRIMARY KEY (assessment_id);
+
+
+--
+-- Name: suspiciousactivityreport suspiciousactivityreport_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.suspiciousactivityreport
+    ADD CONSTRAINT suspiciousactivityreport_pkey PRIMARY KEY (sar_id);
+
+
+--
+-- Name: suspiciousactivityreport suspiciousactivityreport_reference_number_key; Type: CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.suspiciousactivityreport
+    ADD CONSTRAINT suspiciousactivityreport_reference_number_key UNIQUE (reference_number);
+
+
+--
+-- Name: transactionmonitoring transactionmonitoring_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.transactionmonitoring
+    ADD CONSTRAINT transactionmonitoring_pkey PRIMARY KEY (monitor_id);
+
+
+--
+-- Name: idx_aml_risk_level; Type: INDEX; Schema: public; Owner: postgres
+--
+
+CREATE INDEX idx_aml_risk_level ON public.amlscreening USING btree (risk_level);
+
+
+--
+-- Name: idx_aml_screening_date; Type: INDEX; Schema: public; Owner: postgres
+--
+
+CREATE INDEX idx_aml_screening_date ON public.amlscreening USING btree (screening_date);
+
+
+--
+-- Name: idx_auction_bond; Type: INDEX; Schema: public; Owner: postgres
+--
+
+CREATE INDEX idx_auction_bond ON public.auction USING btree (bond_id);
+
+
+--
+-- Name: idx_auction_date; Type: INDEX; Schema: public; Owner: postgres
+--
+
+CREATE INDEX idx_auction_date ON public.auction USING btree (auction_date);
+
+
+--
+-- Name: idx_auction_result_auction; Type: INDEX; Schema: public; Owner: postgres
+--
+
+CREATE INDEX idx_auction_result_auction ON public.auctionresult USING btree (auction_id);
+
+
+--
+-- Name: idx_audit_application; Type: INDEX; Schema: public; Owner: postgres
+--
+
+CREATE INDEX idx_audit_application ON public.applicationaudit USING btree (application_id);
+
+
+--
+-- Name: idx_bank_detail_application; Type: INDEX; Schema: public; Owner: postgres
+--
+
+CREATE INDEX idx_bank_detail_application ON public.applicationbankdetail USING btree (application_id);
+
+
+--
+-- Name: idx_bond_maturity; Type: INDEX; Schema: public; Owner: postgres
+--
+
+CREATE INDEX idx_bond_maturity ON public.bond USING btree (maturity_date);
+
+
+--
+-- Name: idx_bvn_number; Type: INDEX; Schema: public; Owner: postgres
+--
+
+CREATE INDEX idx_bvn_number ON public.bvn_registry USING btree (bvn_number);
+
+
+--
+-- Name: idx_cdd_applicant; Type: INDEX; Schema: public; Owner: postgres
+--
+
+CREATE INDEX idx_cdd_applicant ON public.customerduediligence USING btree (applicant_type, applicant_id);
+
+
+--
+-- Name: idx_corporate_application; Type: INDEX; Schema: public; Owner: postgres
+--
+
+CREATE INDEX idx_corporate_application ON public.corporateapplicant USING btree (application_id);
+
+
+--
+-- Name: idx_corporate_rc; Type: INDEX; Schema: public; Owner: postgres
+--
+
+CREATE INDEX idx_corporate_rc ON public.corporateapplicant USING btree (rc_number);
+
+
+--
+-- Name: idx_diaspora_bvn; Type: INDEX; Schema: public; Owner: postgres
+--
+
+CREATE INDEX idx_diaspora_bvn ON public.diasporainvestor USING btree (bvn_number);
+
+
+--
+-- Name: idx_document_application; Type: INDEX; Schema: public; Owner: postgres
+--
+
+CREATE INDEX idx_document_application ON public.applicationdocument USING btree (application_id);
+
+
+--
+-- Name: idx_foreign_investor_passport; Type: INDEX; Schema: public; Owner: postgres
+--
+
+CREATE INDEX idx_foreign_investor_passport ON public.foreigninvestor USING btree (passport_number);
+
+
+--
+-- Name: idx_identity_linkage; Type: INDEX; Schema: public; Owner: postgres
+--
+
+CREATE INDEX idx_identity_linkage ON public.identitylinkage USING btree (individual_id, bvn_number, nin_number);
+
+
+--
+-- Name: idx_individual_application; Type: INDEX; Schema: public; Owner: postgres
+--
+
+CREATE INDEX idx_individual_application ON public.individualapplicant USING btree (application_id);
+
+
+--
+-- Name: idx_individual_bvn; Type: INDEX; Schema: public; Owner: postgres
+--
+
+CREATE INDEX idx_individual_bvn ON public.individualapplicant USING btree (bvn);
+
+
+--
+-- Name: idx_nin_number; Type: INDEX; Schema: public; Owner: postgres
+--
+
+CREATE INDEX idx_nin_number ON public.nin_registry USING btree (nin_number);
+
+
+--
+-- Name: idx_pep_individual; Type: INDEX; Schema: public; Owner: postgres
+--
+
+CREATE INDEX idx_pep_individual ON public.pepdeclaration USING btree (individual_id);
+
+
+--
+-- Name: idx_risk_assessment_rating; Type: INDEX; Schema: public; Owner: postgres
+--
+
+CREATE INDEX idx_risk_assessment_rating ON public.riskassessment USING btree (risk_rating);
+
+
+--
+-- Name: idx_sar_filing_date; Type: INDEX; Schema: public; Owner: postgres
+--
+
+CREATE INDEX idx_sar_filing_date ON public.suspiciousactivityreport USING btree (filing_date);
+
+
+--
+-- Name: idx_subscription_agent; Type: INDEX; Schema: public; Owner: postgres
+--
+
+CREATE INDEX idx_subscription_agent ON public.bondsubscription USING btree (distribution_agent_id);
+
+
+--
+-- Name: idx_subscription_date; Type: INDEX; Schema: public; Owner: postgres
+--
+
+CREATE INDEX idx_subscription_date ON public.bondsubscription USING btree (application_date);
+
+
+--
+-- Name: idx_subscription_status; Type: INDEX; Schema: public; Owner: postgres
+--
+
+CREATE INDEX idx_subscription_status ON public.bondsubscription USING btree (status);
+
+
+--
+-- Name: idx_transaction_monitoring_alert; Type: INDEX; Schema: public; Owner: postgres
+--
+
+CREATE INDEX idx_transaction_monitoring_alert ON public.transactionmonitoring USING btree (alert_generated);
+
+
+--
+-- Name: bondsubscription check_application_amount; Type: TRIGGER; Schema: public; Owner: postgres
+--
+
+CREATE TRIGGER check_application_amount BEFORE INSERT OR UPDATE ON public.bondsubscription FOR EACH ROW EXECUTE FUNCTION public.validate_application_amount();
+
+
+--
+-- Name: bondsubscription set_application_number; Type: TRIGGER; Schema: public; Owner: postgres
+--
+
+CREATE TRIGGER set_application_number BEFORE INSERT ON public.bondsubscription FOR EACH ROW EXECUTE FUNCTION public.generate_application_number();
+
+
+--
+-- Name: individualapplicant trg_individual_aml_screening; Type: TRIGGER; Schema: public; Owner: postgres
+--
+
+CREATE TRIGGER trg_individual_aml_screening AFTER INSERT ON public.individualapplicant FOR EACH ROW EXECUTE FUNCTION public.trigger_aml_screening();
+
+
+--
+-- Name: bond update_bond_updated_at; Type: TRIGGER; Schema: public; Owner: postgres
+--
+
+CREATE TRIGGER update_bond_updated_at BEFORE UPDATE ON public.bond FOR EACH ROW EXECUTE FUNCTION public.update_updated_at_column();
+
+
+--
+-- Name: bondsubscription update_subscription_updated_at; Type: TRIGGER; Schema: public; Owner: postgres
+--
+
+CREATE TRIGGER update_subscription_updated_at BEFORE UPDATE ON public.bondsubscription FOR EACH ROW EXECUTE FUNCTION public.update_updated_at_column();
+
+
+--
+-- Name: amlscreening amlscreening_corporate_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.amlscreening
+    ADD CONSTRAINT amlscreening_corporate_id_fkey FOREIGN KEY (corporate_id) REFERENCES public.corporateapplicant(corporate_id);
+
+
+--
+-- Name: amlscreening amlscreening_foreign_investor_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.amlscreening
+    ADD CONSTRAINT amlscreening_foreign_investor_id_fkey FOREIGN KEY (foreign_investor_id) REFERENCES public.foreigninvestor(foreign_investor_id);
+
+
+--
+-- Name: amlscreening amlscreening_individual_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.amlscreening
+    ADD CONSTRAINT amlscreening_individual_id_fkey FOREIGN KEY (individual_id) REFERENCES public.individualapplicant(individual_id);
+
+
+--
+-- Name: applicationaudit applicationaudit_application_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.applicationaudit
+    ADD CONSTRAINT applicationaudit_application_id_fkey FOREIGN KEY (application_id) REFERENCES public.bondsubscription(application_id) ON DELETE CASCADE;
+
+
+--
+-- Name: applicationbankdetail applicationbankdetail_application_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.applicationbankdetail
+    ADD CONSTRAINT applicationbankdetail_application_id_fkey FOREIGN KEY (application_id) REFERENCES public.bondsubscription(application_id) ON DELETE CASCADE;
+
+
+--
+-- Name: applicationbankdetail applicationbankdetail_corporate_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.applicationbankdetail
+    ADD CONSTRAINT applicationbankdetail_corporate_id_fkey FOREIGN KEY (corporate_id) REFERENCES public.corporateapplicant(corporate_id);
+
+
+--
+-- Name: applicationbankdetail applicationbankdetail_individual_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.applicationbankdetail
+    ADD CONSTRAINT applicationbankdetail_individual_id_fkey FOREIGN KEY (individual_id) REFERENCES public.individualapplicant(individual_id);
+
+
+--
+-- Name: applicationdocument applicationdocument_application_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.applicationdocument
+    ADD CONSTRAINT applicationdocument_application_id_fkey FOREIGN KEY (application_id) REFERENCES public.bondsubscription(application_id) ON DELETE CASCADE;
+
+
+--
+-- Name: applicationnote applicationnote_application_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.applicationnote
+    ADD CONSTRAINT applicationnote_application_id_fkey FOREIGN KEY (application_id) REFERENCES public.bondsubscription(application_id) ON DELETE CASCADE;
+
+
+--
+-- Name: applicationwitness applicationwitness_application_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.applicationwitness
+    ADD CONSTRAINT applicationwitness_application_id_fkey FOREIGN KEY (application_id) REFERENCES public.bondsubscription(application_id) ON DELETE CASCADE;
+
+
+--
+-- Name: applicationwitness applicationwitness_individual_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.applicationwitness
+    ADD CONSTRAINT applicationwitness_individual_id_fkey FOREIGN KEY (individual_id) REFERENCES public.individualapplicant(individual_id);
+
+
+--
+-- Name: bondsubscription bondsubscription_auction_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.bondsubscription
+    ADD CONSTRAINT bondsubscription_auction_id_fkey FOREIGN KEY (auction_id) REFERENCES public.auction(auction_id);
+
+
+--
+-- Name: bondsubscription bondsubscription_bond_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.bondsubscription
+    ADD CONSTRAINT bondsubscription_bond_id_fkey FOREIGN KEY (bond_id) REFERENCES public.bond(bond_id);
+
+
+--
+-- Name: bondsubscription bondsubscription_distribution_agent_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.bondsubscription
+    ADD CONSTRAINT bondsubscription_distribution_agent_id_fkey FOREIGN KEY (distribution_agent_id) REFERENCES public.distributionagent(agent_id);
+
+
+--
+-- Name: bvn_registry bvn_registry_individual_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.bvn_registry
+    ADD CONSTRAINT bvn_registry_individual_id_fkey FOREIGN KEY (individual_id) REFERENCES public.individualapplicant(individual_id);
+
+
+--
+-- Name: corporateapplicant corporateapplicant_application_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.corporateapplicant
+    ADD CONSTRAINT corporateapplicant_application_id_fkey FOREIGN KEY (application_id) REFERENCES public.bondsubscription(application_id) ON DELETE CASCADE;
+
+
+--
+-- Name: diasporainvestor diasporainvestor_bvn_number_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.diasporainvestor
+    ADD CONSTRAINT diasporainvestor_bvn_number_fkey FOREIGN KEY (bvn_number) REFERENCES public.bvn_registry(bvn_number);
+
+
+--
+-- Name: diasporainvestor diasporainvestor_foreign_investor_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.diasporainvestor
+    ADD CONSTRAINT diasporainvestor_foreign_investor_id_fkey FOREIGN KEY (foreign_investor_id) REFERENCES public.foreigninvestor(foreign_investor_id);
+
+
+--
+-- Name: diasporainvestor diasporainvestor_nin_number_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.diasporainvestor
+    ADD CONSTRAINT diasporainvestor_nin_number_fkey FOREIGN KEY (nin_number) REFERENCES public.nin_registry(nin_number);
+
+
+--
+-- Name: auctionresult fk_auction; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.auctionresult
+    ADD CONSTRAINT fk_auction FOREIGN KEY (auction_id) REFERENCES public.auction(auction_id) ON DELETE CASCADE;
+
+
+--
+-- Name: auction fk_bond; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.auction
+    ADD CONSTRAINT fk_bond FOREIGN KEY (bond_id) REFERENCES public.bond(bond_id) ON DELETE CASCADE;
+
+
+--
+-- Name: foreigninvestor foreigninvestor_application_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.foreigninvestor
+    ADD CONSTRAINT foreigninvestor_application_id_fkey FOREIGN KEY (application_id) REFERENCES public.bondsubscription(application_id) ON DELETE CASCADE;
+
+
+--
+-- Name: foreigninvestordocument foreigninvestordocument_foreign_investor_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.foreigninvestordocument
+    ADD CONSTRAINT foreigninvestordocument_foreign_investor_id_fkey FOREIGN KEY (foreign_investor_id) REFERENCES public.foreigninvestor(foreign_investor_id);
+
+
+--
+-- Name: identitylinkage identitylinkage_bvn_number_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.identitylinkage
+    ADD CONSTRAINT identitylinkage_bvn_number_fkey FOREIGN KEY (bvn_number) REFERENCES public.bvn_registry(bvn_number);
+
+
+--
+-- Name: identitylinkage identitylinkage_individual_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.identitylinkage
+    ADD CONSTRAINT identitylinkage_individual_id_fkey FOREIGN KEY (individual_id) REFERENCES public.individualapplicant(individual_id);
+
+
+--
+-- Name: identitylinkage identitylinkage_nin_number_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.identitylinkage
+    ADD CONSTRAINT identitylinkage_nin_number_fkey FOREIGN KEY (nin_number) REFERENCES public.nin_registry(nin_number);
+
+
+--
+-- Name: individualapplicant individualapplicant_application_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.individualapplicant
+    ADD CONSTRAINT individualapplicant_application_id_fkey FOREIGN KEY (application_id) REFERENCES public.bondsubscription(application_id) ON DELETE CASCADE;
+
+
+--
+-- Name: nin_registry nin_registry_individual_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.nin_registry
+    ADD CONSTRAINT nin_registry_individual_id_fkey FOREIGN KEY (individual_id) REFERENCES public.individualapplicant(individual_id);
+
+
+--
+-- Name: pepdeclaration pepdeclaration_individual_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.pepdeclaration
+    ADD CONSTRAINT pepdeclaration_individual_id_fkey FOREIGN KEY (individual_id) REFERENCES public.individualapplicant(individual_id);
+
+
+--
+-- PostgreSQL database dump complete
+--
+
+\unrestrict visBYGNtR17EdVe3uXVIR0RiFMDS1bbkxkeV9geIA28OruJ6CUTBwMClEE0uep1
+
